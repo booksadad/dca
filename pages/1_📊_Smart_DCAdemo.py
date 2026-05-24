@@ -348,7 +348,16 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
             sum_valid_target = port_df['Target_%'].sum()
             if sum_valid_target > 0:
                 port_df['Target_%'] = (port_df['Target_%'] / sum_valid_target) * 100.0
-
+        # ==========================================
+        # 🛑 FOMO CIRCUIT BREAKER (Anti-Doi System)
+        # ==========================================
+        fomo_list = [t for t in port_df['Ticker'] if rsi_data.get(t, 50) > 75] 
+        if fomo_list:
+            port_df.loc[port_df['Ticker'].isin(fomo_list), 'Target_%'] = 0.0
+            sum_target = port_df['Target_%'].sum()
+            if sum_target > 0:
+                port_df['Target_%'] = (port_df['Target_%'] / sum_target) * 100.0
+            st.warning(f"🛑 **FOMO Breaker ทำงาน:** เบรกหัวทิ่ม! พบหุ้น Overbought กราฟตึงจัด ({', '.join(fomo_list)}) ระบบสั่งระงับการซื้อชั่วคราวเพื่อป้องกันการติดดอย!")
         # === จัดการตังค์ ===
         target_total = total_port_value + actual_budget
         port_df['Target_Val'] = target_total * (port_df['Target_%'] / 100)
