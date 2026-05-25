@@ -22,7 +22,7 @@ if not api_key:
 try:
     genai.configure(api_key=api_key)
     # ใช้เครื่องยนต์ 2.0 ที่แรงและเสถียรที่สุดตอนนี้
-    model = genai.GenerativeModel('gemini-2.0-flash') 
+    model = genai.GenerativeModel('gemini-3.5-flash') 
     
     st.success("✅ เชื่อมต่อสมองกล AI สำเร็จ พร้อมใช้งาน!")
     
