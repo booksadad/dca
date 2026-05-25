@@ -12,11 +12,13 @@ from scipy.signal import argrelextrema
 
 warnings.filterwarnings("ignore")
 
-# สมมติว่าไฟล์ quant_math.py มีฟังก์ชันเหล่านี้อยู่ (ถ้าไม่มีให้คอมเมนต์ออกหรือใช้ฟังก์ชันจำลอง)
+# ==========================================
+# 🛠️ ฟังก์ชันคณิตศาสตร์ (พร้อมระบบสำรอง)
+# ==========================================
 try:
     from quant_math import calc_zscore, calculate_smart_weights, allocate_v21_fixed, calculate_rsi, check_doi_risk
 except ImportError:
-    # ฟังก์ชันจำลองกรณีหา quant_math ไม่เจอ เพื่อให้โค้ดรันได้
+    # ฟังก์ชันจำลองกรณีหา quant_math ไม่เจอ เพื่อให้โค้ดรันได้บน Cloud
     def calc_zscore(series): return (series - series.mean()) / series.std()
     def calculate_rsi(series, period=14):
         delta = series.diff()
@@ -52,11 +54,10 @@ def find_sr_levels(series):
         return "-"
 
 # ==========================================
-# 💾 ฐานข้อมูลความจำ & หมวดหมู่ (V.50.13 เพิ่ม Compounders)
+# 💾 ฐานข้อมูลความจำ & หมวดหมู่ (V.50.14)
 # ==========================================
 PORTFOLIO_FILE = "my_portfolio_data.csv"
 
-# เพิ่มหุ้น Compounders สุดโหดเข้ามาในระบบ (MSFT, AVGO, COST, UNH, PEP)
 SECTOR_DB = {
     "💻 Tech": ["NVDA", "MSFT", "GOOG", "META", "CSCO", "TXN", "AAPL", "AMD", "PLTR", "AVGO", "RKLB"],
     "🛍️ Consumer": ["COST", "KO", "PEP", "BLK", "MELI", "V", "MA", "WMT", "JPM"],
@@ -68,34 +69,27 @@ ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for 
 DEFENSIVE_SECTORS = ["🛍️ Consumer", "🩺 Health"]
 
 if 'dca_budget' not in st.session_state:
-    st.session_state['dca_budget'] = 500.0  # เซ็ตเริ่มต้นที่ 500 บาท
+    st.session_state['dca_budget'] = 500.0 
 if 'min_order_thb' not in st.session_state:
     st.session_state['min_order_thb'] = 50.0
 
-st.title("🛡️ QUANT-HQ DCA (V.50.13 The Compounder)")
-st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(อัปเกรด: Anti-FOMO, Cloud Fallback และเพิ่ม Earning Power)**")
+st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
+
+st.title("🛡️ QUANT-HQ DCA (V.50.14 The Ultimate)")
+st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(อัปเกรด: แก้บั๊กความจำเสื่อม & ขยายเพดานสายบุก Tech)**")
 st.markdown("---")
 
 # ==========================================
-# 🗂️ แถบด้านซ้าย (Sidebar)
+# 🗂️ แถบด้านซ้าย (Sidebar) - ระบบ Anti-Amnesia
 # ==========================================
-# --- อัปเกรดระบบจำชื่อหุ้น ---
 default_tickers = "MSFT, AVGO, COST, NVDA, V, KO, JNJ, RKLB"
 if os.path.exists(PORTFOLIO_FILE):
     try:
         temp_df = pd.read_csv(PORTFOLIO_FILE)
         if not temp_df.empty and "รายชื่อหุ้น" in temp_df.columns:
-            default_tickers = ", ".join(temp_df["รายชื่อหุ้น"].tolist())
-    except:
-        pass
-
-# --- อัปเกรดระบบจำชื่อหุ้น ---
-default_tickers = "MSFT, AVGO, COST, NVDA, V, KO, JNJ, RKLB"
-if os.path.exists(PORTFOLIO_FILE):
-    try:
-        temp_df = pd.read_csv(PORTFOLIO_FILE)
-        if not temp_df.empty and "รายชื่อหุ้น" in temp_df.columns:
-            default_tickers = ", ".join(temp_df["รายชื่อหุ้น"].tolist())
+            valid_tickers = [str(t) for t in temp_df["รายชื่อหุ้น"].tolist() if str(t).strip()]
+            if valid_tickers:
+                default_tickers = ", ".join(valid_tickers)
     except:
         pass
 
@@ -130,7 +124,7 @@ ai_signals = st.session_state.get('ai_signals', {})
 
 col_input1, col_input2 = st.columns(2)
 with col_input1: 
-    budget = st.number_input("💵 งบประมาณพุธ/เสาร์ (บาท)", min_value=100, max_value=50000, value=int(st.session_state['dca_budget']), step=100)
+    budget = st.number_input("💵 งบประมาณจัดสรร (บาท)", min_value=100, max_value=50000, value=int(st.session_state['dca_budget']), step=100)
     st.session_state['dca_budget'] = float(budget)
 with col_input2: 
     min_order_thb = st.number_input("🚦 ยอดซื้อขั้นต่ำต่อหุ้น (บาท)", min_value=10, max_value=500, value=int(st.session_state['min_order_thb']), step=10)
@@ -169,7 +163,7 @@ lambda_msg = ""
 fomo_msg = ""
 actual_budget = budget 
 
-if st.button("🚀 รันระบบ Ultimate Rebalancer"):
+if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
     if not my_portfolio: 
         st.error("⚠️ โปรดระบุชื่อหุ้นที่แถบด้านข้างซ้ายมือก่อนครับ")
     else:
@@ -182,7 +176,7 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
         market_data = yf.download([benchmark, fx_ticker], period="3y", progress=False)['Close']
         enable_print()
         
-        # Adaptive Lambda (ตรวจชีพจรตลาด)
+        # Adaptive Lambda
         voo_ret = market_data[benchmark].pct_change().dropna()
         vol_30d = voo_ret.tail(30).std() * np.sqrt(252)
         vol_252d = voo_ret.tail(252).std() * np.sqrt(252)
@@ -380,7 +374,8 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
 
         sector_totals = port_df.groupby('Sector')['Current'].sum().reset_index()
         overweight_sectors = []
-        # โค้ดใหม่ (ขยายเพดานให้พอร์ตสายบุก)
+        
+        # 🚀 อัปเกรด V.50.14: ขยายเพดานหุ้นกลุ่ม Tech สำหรับพอร์ตสายบุก (Compounders)
         max_sector_cap = 55 if is_market_crashing else 70 
         
         for _, row in sector_totals.iterrows():
