@@ -4,7 +4,7 @@ import google.generativeai as genai
 st.title("🤖 QuantHQ AI Copilot")
 
 # ใส่ API Key ของกัปตัน (ในระบบจริงควรซ่อนไว้ใน st.secrets)
-API_KEY = "" 
+API_KEY = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=API_KEY)
 
 # เรียกใช้โมเดล (แนะนำ flash เพราะประมวลผลเร็วและฟรีเยอะ)
