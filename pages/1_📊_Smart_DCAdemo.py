@@ -79,9 +79,18 @@ st.markdown("---")
 # ==========================================
 # 🗂️ แถบด้านซ้าย (Sidebar)
 # ==========================================
+# --- อัปเกรดระบบจำชื่อหุ้น ---
+default_tickers = "MSFT, AVGO, COST, NVDA, V, KO, JNJ, RKLB"
+if os.path.exists(PORTFOLIO_FILE):
+    try:
+        temp_df = pd.read_csv(PORTFOLIO_FILE)
+        if not temp_df.empty and "รายชื่อหุ้น" in temp_df.columns:
+            default_tickers = ", ".join(temp_df["รายชื่อหุ้น"].tolist())
+    except:
+        pass
+
 st.sidebar.subheader("🗂️ หุ้นในพอร์ตของคุณ")
-# อัปเดตรายชื่อเริ่มต้นให้มีแกน Compounder + Satellite ผสมกัน
-tickers_input = st.sidebar.text_area("รายชื่อหุ้นที่ถืออยู่ (คั่นด้วยลูกน้ำ)", "MSFT, AVGO, COST, NVDA, V, KO, JNJ, RKLB")
+tickers_input = st.sidebar.text_area("รายชื่อหุ้นที่ถืออยู่ (คั่นด้วยลูกน้ำ)", default_tickers)
 my_portfolio = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 st.sidebar.markdown("---")
 
