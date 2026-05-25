@@ -23,7 +23,7 @@ if not api_key:
 # 🛡️ ด่านที่ 3: ถ้าผ่าน 2 ด่านแรกมาได้ ให้รันระบบ AI
 try:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-3.5-flash')
     
     st.success("✅ เชื่อมต่อสมองกล AI สำเร็จ พร้อมใช้งาน!")
     
