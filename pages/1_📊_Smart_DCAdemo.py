@@ -12,7 +12,22 @@ from scipy.signal import argrelextrema
 
 warnings.filterwarnings("ignore")
 
-from quant_math import calc_zscore, calculate_smart_weights, allocate_v21_fixed, calculate_rsi, check_doi_risk
+# สมมติว่าไฟล์ quant_math.py มีฟังก์ชันเหล่านี้อยู่ (ถ้าไม่มีให้คอมเมนต์ออกหรือใช้ฟังก์ชันจำลอง)
+try:
+    from quant_math import calc_zscore, calculate_smart_weights, allocate_v21_fixed, calculate_rsi, check_doi_risk
+except ImportError:
+    # ฟังก์ชันจำลองกรณีหา quant_math ไม่เจอ เพื่อให้โค้ดรันได้
+    def calc_zscore(series): return (series - series.mean()) / series.std()
+    def calculate_rsi(series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+    def check_doi_risk(rsi_val):
+        if rsi_val > 75: return 'ดอย (ซื้อระวัง)'
+        elif rsi_val < 30: return 'ของถูก (เก็บสะสม)'
+        return 'ปกติ'
 
 def block_print():
     sys.stdout = open(os.devnull, 'w')
@@ -37,14 +52,15 @@ def find_sr_levels(series):
         return "-"
 
 # ==========================================
-# 💾 ฐานข้อมูลความจำ & หมวดหมู่
+# 💾 ฐานข้อมูลความจำ & หมวดหมู่ (V.50.13 เพิ่ม Compounders)
 # ==========================================
 PORTFOLIO_FILE = "my_portfolio_data.csv"
 
+# เพิ่มหุ้น Compounders สุดโหดเข้ามาในระบบ (MSFT, AVGO, COST, UNH, PEP)
 SECTOR_DB = {
-    "💻 Tech": ["NVDA", "GOOG", "META", "CSCO", "TXN", "MSFT", "AAPL", "AMD", "PLTR", "AVGO"],
-    "🛍️ Consumer": ["KO", "BLK", "MELI", "V", "MA", "WMT", "COST", "JPM"],
-    "🩺 Health": ["JNJ", "ISRG", "LLY", "UNH", "ABBV"],
+    "💻 Tech": ["NVDA", "MSFT", "GOOG", "META", "CSCO", "TXN", "AAPL", "AMD", "PLTR", "AVGO", "RKLB"],
+    "🛍️ Consumer": ["COST", "KO", "PEP", "BLK", "MELI", "V", "MA", "WMT", "JPM"],
+    "🩺 Health": ["UNH", "JNJ", "ISRG", "LLY", "ABBV"],
     "🚗 EV": ["TSLA", "UBER", "TM"],
     "🌿 Green": ["FSLR", "ENPH", "NEE", "SEDG"]
 }
@@ -52,19 +68,20 @@ ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for 
 DEFENSIVE_SECTORS = ["🛍️ Consumer", "🩺 Health"]
 
 if 'dca_budget' not in st.session_state:
-    st.session_state['dca_budget'] = 500.0
+    st.session_state['dca_budget'] = 500.0  # เซ็ตเริ่มต้นที่ 500 บาท
 if 'min_order_thb' not in st.session_state:
     st.session_state['min_order_thb'] = 50.0
 
-st.title("🛡️ HYBRID SENTINEL DCA (V.50.11 The Final Boss)")
-st.markdown("ระบบจัดพอร์ตระดับ 10/10 **(ฉบับปิดจ็อบ: เพิ่ม Adaptive Lambda ปรับความกลัวตามชีพจรตลาด!)**")
+st.title("🛡️ QUANT-HQ DCA (V.50.13 The Compounder)")
+st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(อัปเกรด: Anti-FOMO, Cloud Fallback และเพิ่ม Earning Power)**")
 st.markdown("---")
 
 # ==========================================
 # 🗂️ แถบด้านซ้าย (Sidebar)
 # ==========================================
 st.sidebar.subheader("🗂️ หุ้นในพอร์ตของคุณ")
-tickers_input = st.sidebar.text_area("รายชื่อหุ้นที่ถืออยู่ (คั่นด้วยลูกน้ำ)", "FSLR, JNJ, KO, CSCO, TXN, V, NEE, NVDA")
+# อัปเดตรายชื่อเริ่มต้นให้มีแกน Compounder + Satellite ผสมกัน
+tickers_input = st.sidebar.text_area("รายชื่อหุ้นที่ถืออยู่ (คั่นด้วยลูกน้ำ)", "MSFT, AVGO, COST, NVDA, V, KO, JNJ, RKLB")
 my_portfolio = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 st.sidebar.markdown("---")
 
@@ -84,7 +101,7 @@ base_lambda = st.sidebar.slider(
     min_value=0.1, max_value=10.0, value=2.0, step=0.1,
     help="ระบบจะนำค่านี้ไปคูณกับความผันผวนของตลาดแบบอัตโนมัติ"
 )
-st.sidebar.info("💡 **Active Modules:** \n- Black-Litterman Logic\n- Adaptive Lambda (Vol Ratio)\n- EWMA Semi-Cov (63D)\n- L2 & L1 Penalties")
+st.sidebar.info("💡 **Active Modules:** \n- Black-Litterman Logic\n- Adaptive Lambda (Vol Ratio)\n- 🛑 FOMO Circuit Breaker\n- Cloud Fallback Alpha\n- Earning Power Scan")
 st.sidebar.markdown("---")
 
 # ==========================================
@@ -94,7 +111,7 @@ ai_signals = st.session_state.get('ai_signals', {})
 
 col_input1, col_input2 = st.columns(2)
 with col_input1: 
-    budget = st.number_input("💵 งบประมาณตั้งต้นรอบนี้ (บาท)", min_value=100, max_value=50000, value=int(st.session_state['dca_budget']), step=100)
+    budget = st.number_input("💵 งบประมาณพุธ/เสาร์ (บาท)", min_value=100, max_value=50000, value=int(st.session_state['dca_budget']), step=100)
     st.session_state['dca_budget'] = float(budget)
 with col_input2: 
     min_order_thb = st.number_input("🚦 ยอดซื้อขั้นต่ำต่อหุ้น (บาท)", min_value=10, max_value=500, value=int(st.session_state['min_order_thb']), step=10)
@@ -130,13 +147,14 @@ current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], 
 sniper_msg = ""
 bl_msg = ""
 lambda_msg = ""
+fomo_msg = ""
 actual_budget = budget 
 
 if st.button("🚀 รันระบบ Ultimate Rebalancer"):
     if not my_portfolio: 
         st.error("⚠️ โปรดระบุชื่อหุ้นที่แถบด้านข้างซ้ายมือก่อนครับ")
     else:
-        status_box = st.status(f"🔮 เดินเครื่องควอนตัม: ผสานตลาด, AI, และความกลัวอัตโนมัติ...", expanded=True)
+        status_box = st.status(f"🔮 เดินเครื่องสมองกล: ตรวจจับเทรนด์และป้องกัน FOMO...", expanded=True)
         
         benchmark = 'VOO'
         fx_ticker = 'USDTHB=X'
@@ -145,7 +163,7 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
         market_data = yf.download([benchmark, fx_ticker], period="3y", progress=False)['Close']
         enable_print()
         
-        # 🌟 V.50.11 The Final Boss: ตรวจจับชีพจรตลาดเพื่อปรับ Lambda อัตโนมัติ
+        # Adaptive Lambda (ตรวจชีพจรตลาด)
         voo_ret = market_data[benchmark].pct_change().dropna()
         vol_30d = voo_ret.tail(30).std() * np.sqrt(252)
         vol_252d = voo_ret.tail(252).std() * np.sqrt(252)
@@ -154,9 +172,9 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
         dynamic_lambda = base_lambda * vol_ratio
         
         if vol_ratio > 1.2:
-            lambda_msg = f"🌩️ **Adaptive Risk:** ตลาดผันผวนจัด (Ratio: {vol_ratio:.2f}) ระบบเร่งสวิตช์ความกลัว (λ) อัตโนมัติเป็น {dynamic_lambda:.2f}"
+            lambda_msg = f"🌩️ **Adaptive Risk:** ตลาดผันผวนจัด (Ratio: {vol_ratio:.2f}) เร่งสวิตช์ความกลัว (λ) เป็น {dynamic_lambda:.2f}"
         elif vol_ratio < 0.8:
-            lambda_msg = f"☀️ **Adaptive Risk:** ตลาดนิ่งสงบ (Ratio: {vol_ratio:.2f}) ระบบลดสวิตช์ความกลัว (λ) ลงเหลือ {dynamic_lambda:.2f} เพื่อเร่งทำกำไร!"
+            lambda_msg = f"☀️ **Adaptive Risk:** ตลาดนิ่งสงบ (Ratio: {vol_ratio:.2f}) ลดสวิตช์ความกลัว (λ) เหลือ {dynamic_lambda:.2f}"
         else:
             lambda_msg = f"⚖️ **Adaptive Risk:** ตลาดปกติ (Ratio: {vol_ratio:.2f}) ใช้ค่าความกลัว (λ) ที่ {dynamic_lambda:.2f}"
 
@@ -215,11 +233,19 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
             sr_data[t] = find_sr_levels(series_clean)
         
         final_df = pd.merge(df, pd.DataFrame(quality_data), on='Ticker')
-        final_df['Alpha_Score'] = (calc_zscore(final_df['Raw_Mom']) * 0.5) + (calc_zscore(final_df['ROA'].fillna(final_df['ROA'].median())) * 0.25) + (calc_zscore(final_df['Margin'].fillna(final_df['Margin'].median())) * 0.25)
+        
+        # 🌟 ระบบ Cloud Fallback
+        if final_df['ROA'].isna().all() or final_df['Margin'].isna().all():
+            final_df['Alpha_Score'] = calc_zscore(final_df['Raw_Mom'])
+        else:
+            final_df['Alpha_Score'] = (calc_zscore(final_df['Raw_Mom']) * 0.5) + \
+                                      (calc_zscore(final_df['ROA'].fillna(final_df['ROA'].median())) * 0.25) + \
+                                      (calc_zscore(final_df['Margin'].fillna(final_df['Margin'].median())) * 0.25)
         
         final_df['Sharpe'] = final_df['Ticker'].map(sharpe_ratio)
         final_df['Sortino'] = final_df['Ticker'].map(sortino_ratio)
         
+        final_df['Alpha_Score'] = final_df['Alpha_Score'].fillna(0)
         final_df = final_df.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
         final_df.insert(0, 'Rank', range(1, len(final_df) + 1))
         
@@ -248,7 +274,6 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
                 
                 inv_vol = 1.0 / returns_1y[port_tickers].std()
                 w_eq = (inv_vol / inv_vol.sum()).values
-                # ใช้ dynamic_lambda แทนที่ของเดิม
                 Pi = dynamic_lambda * np.dot(ewma_cov, w_eq) 
                 
                 tau = 0.05
@@ -285,7 +310,7 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
                         omega_diag[i] = ewma_cov[i, i] * tau * 100 
 
                 if len(sniper_targets) > 0:
-                    sniper_msg = f"🎯 **Sniper Alert:** พบเป้าหมาย {', '.join(sniper_targets)} ทฤษฎีเบส์ได้ปรับดุลยภาพเพื่อช้อนซื้อแล้ว!"
+                    sniper_msg = f"🎯 **Sniper Alert:** พบเป้าหมาย {', '.join(sniper_targets)} ทฤษฎีเบส์ปรับดุลยภาพเพื่อช้อนซื้อแล้ว!"
                 if ai_active_count > 0:
                     bl_msg = f"🤖 **Black-Litterman Active:** ผสานข้อมูล AI ({ai_active_count} ตัว) เข้ากับดุลยภาพตลาดสำเร็จ!"
 
@@ -308,7 +333,6 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
                     l2_penalty = gamma_penalty * np.sum(w**2)
                     l1_turnover_penalty = tau_penalty * np.sum(np.abs(w - current_weights_arr))
                     
-                    # 🌟 ใช้ dynamic_lambda แทน
                     utility = expected_return - (dynamic_lambda / 2.0) * portfolio_variance - l2_penalty - l1_turnover_penalty
                     return -utility
                     
@@ -348,16 +372,18 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
             sum_valid_target = port_df['Target_%'].sum()
             if sum_valid_target > 0:
                 port_df['Target_%'] = (port_df['Target_%'] / sum_valid_target) * 100.0
+
         # ==========================================
-        # 🛑 FOMO CIRCUIT BREAKER (Anti-Doi System)
+        # 🛑 FOMO CIRCUIT BREAKER (กันติดดอย)
         # ==========================================
         fomo_list = [t for t in port_df['Ticker'] if rsi_data.get(t, 50) > 75] 
-        if fomo_list:
+        if len(fomo_list) > 0:
             port_df.loc[port_df['Ticker'].isin(fomo_list), 'Target_%'] = 0.0
-            sum_target = port_df['Target_%'].sum()
-            if sum_target > 0:
-                port_df['Target_%'] = (port_df['Target_%'] / sum_target) * 100.0
-            st.warning(f"🛑 **FOMO Breaker ทำงาน:** เบรกหัวทิ่ม! พบหุ้น Overbought กราฟตึงจัด ({', '.join(fomo_list)}) ระบบสั่งระงับการซื้อชั่วคราวเพื่อป้องกันการติดดอย!")
+            sum_safe_target = port_df['Target_%'].sum()
+            if sum_safe_target > 0:
+                port_df['Target_%'] = (port_df['Target_%'] / sum_safe_target) * 100.0
+            fomo_msg = f"🛑 **Anti-FOMO Active:** สั่งระงับงบซื้อ {', '.join(fomo_list)} (เป้า 0%) เพราะกราฟตึง (RSI>75) เสี่ยงติดดอย!"
+
         # === จัดการตังค์ ===
         target_total = total_port_value + actual_budget
         port_df['Target_Val'] = target_total * (port_df['Target_%'] / 100)
@@ -436,12 +462,10 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
             
         st.markdown(f"### 📋 3. ตารางใบสั่งซื้ออัจฉริยะ (The Final Auto-Pilot)")
         
-        if lambda_msg != "":
-            st.info(lambda_msg) # แสดงแจ้งเตือนความกลัวของ AI
-        if sniper_msg != "":
-            st.success(sniper_msg)
-        if bl_msg != "":
-            st.info(bl_msg)
+        if lambda_msg != "": st.info(lambda_msg) 
+        if fomo_msg != "": st.error(fomo_msg)
+        if sniper_msg != "": st.success(sniper_msg)
+        if bl_msg != "": st.info(bl_msg)
             
         display_cols = ['หุ้น', 'สถานะ', 'รับ/ต้าน (S1, S2 | R1)', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']
         st.dataframe(out[display_cols].sort_values(by='ซื้อ', ascending=False), use_container_width=True, hide_index=True)
