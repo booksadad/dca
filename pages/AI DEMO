@@ -1,0 +1,19 @@
+import streamlit as st
+import google.generativeai as genai
+
+st.title("🤖 QuantHQ AI Copilot")
+
+# ใส่ API Key ของกัปตัน (ในระบบจริงควรซ่อนไว้ใน st.secrets)
+API_KEY = "ใส่_API_KEY_ตรงนี้" 
+genai.configure(api_key=API_KEY)
+
+# เรียกใช้โมเดล (แนะนำ flash เพราะประมวลผลเร็วและฟรีเยอะ)
+model = genai.GenerativeModel('gemini-1.5-flash')
+
+ticker = st.text_input("พิมพ์ชื่อหุ้นที่ต้องการให้ AI วิเคราะห์", "NVDA")
+
+if st.button("วิเคราะห์เลย!"):
+    with st.spinner("AI กำลังอ่านข้อมูล..."):
+        prompt = f"ในฐานะนักวิเคราะห์ Quant ช่วยสรุปจุดแข็ง ความเสี่ยง และโมเมนตัมปัจจุบันของหุ้น {ticker} ให้หน่อย ขอสั้นๆ กระชับ เป็น Bullet"
+        response = model.generate_content(prompt)
+        st.write(response.text)
