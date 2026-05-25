@@ -1,19 +1,27 @@
 import streamlit as st
 import google.generativeai as genai
 
-st.title("🤖 QuantHQ AI Copilot")
+st.set_page_config(page_title="AI Copilot", page_icon="🤖")
 
-# ใส่ API Key ของกัปตัน (ในระบบจริงควรซ่อนไว้ใน st.secrets)
-API_KEY = st.secrets["GEMINI_API_KEY"]
-genai.configure(api_key=API_KEY)
+st.title("🤖 QuantHQ : AI Copilot")
+st.markdown("ผู้ช่วยวิเคราะห์ข่าวและงบการเงิน")
+st.markdown("---")
 
-# เรียกใช้โมเดล (แนะนำ flash เพราะประมวลผลเร็วและฟรีเยอะ)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# 🧠 อัปเกรด: ใช้ .get เพื่อป้องกันโค้ดเอ๋อจนหน้าเมนูหายไปเฉยๆ
+api_key = st.secrets.get("GEMINI_API_KEY")
 
-ticker = st.text_input("พิมพ์ชื่อหุ้นที่ต้องการให้ AI วิเคราะห์", "NVDA")
-
-if st.button("วิเคราะห์เลย!"):
-    with st.spinner("AI กำลังอ่านข้อมูล..."):
-        prompt = f"ในฐานะนักวิเคราะห์ Quant ช่วยสรุปจุดแข็ง ความเสี่ยง และโมเมนตัมปัจจุบันของหุ้น {ticker} ให้หน่อย ขอสั้นๆ กระชับ เป็น Bullet"
-        response = model.generate_content(prompt)
-        st.write(response.text)
+if not api_key:
+    st.error("❌ ไม่พบคีย์ในตู้เซฟหลังบ้าน! โปรดไปที่ Settings -> Secrets บนหน้าเว็บ Streamlit Cloud แล้วพิมพ์ใส่ลงไป: GEMINI_API_KEY = 'คีย์ของกัปตัน'")
+else:
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        ticker = st.text_input("พิมพ์ชื่อหุ้นที่ต้องการให้ AI วิเคราะห์", "MSFT")
+        if st.button("🧠 วิเคราะห์เลย!", type="primary"):
+            with st.spinner("AI กำลังวิเคราะห์ข้อมูล..."):
+                prompt = f"สรุปจุดแข็งและความเสี่ยงของหุ้น {ticker.upper()} มาสั้นๆ กระชับ 3 Bullet points"
+                response = model.generate_content(prompt)
+                st.info(response.text)
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อ AI: {e}")
