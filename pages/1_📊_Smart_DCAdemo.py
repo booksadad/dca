@@ -361,7 +361,8 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer"):
 
         sector_totals = port_df.groupby('Sector')['Current'].sum().reset_index()
         overweight_sectors = []
-        max_sector_cap = 40 if is_market_crashing else 60 
+        # โค้ดใหม่ (ขยายเพดานให้พอร์ตสายบุก)
+        max_sector_cap = 55 if is_market_crashing else 70 
         
         for _, row in sector_totals.iterrows():
             sec_weight = (row['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
