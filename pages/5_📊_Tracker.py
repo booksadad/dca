@@ -50,13 +50,13 @@ if st.button("🚀 รันระบบ Backtest & Analytics", type="primary"):
             st.error("❌ ดึงข้อมูลล้มเหลว หรือหุ้นบางตัวเพิ่งเข้าตลาดไม่ถึงเวลาที่กำหนด")
             st.stop()
 
-        # 3. คำนวณผลตอบแทนรายวัน (Daily Returns) แบบ Equal Weight สบายๆ ก่อน
+        # 3. คำนวณผลตอบแทนรายวัน (Daily Returns) แบบ Equal Weight
         daily_ret = data.pct_change().dropna()
         
         valid_port_tickers = [t for t in my_portfolio if t in daily_ret.columns]
         port_weight = 1.0 / len(valid_port_tickers)
         
-        # สมมติฐานพอร์ต: Equal Weight Rebalance ทุกวัน (ง่ายสุดในการทำ Baseline)
+        # สมมติฐานพอร์ต: Equal Weight Rebalance ทุกวัน
         port_daily_ret = (daily_ret[valid_port_tickers] * port_weight).sum(axis=1)
         bench_daily_ret = daily_ret[benchmark_ticker]
         
@@ -144,5 +144,6 @@ if st.button("🚀 รันระบบ Backtest & Analytics", type="primary"):
                 "Sharpe": t_sharpe, "Max Drawdown (%)": t_mdd, "Beta (vs Mkt)": beta
             })
             
+        # 🛠️ ปิดบั๊กตาราง: ตัด style.background_gradient ออก ใช้ตารางธรรมดาที่เสถียร 100%
         df_risk = pd.DataFrame(risk_data).round(2)
-        st.dataframe(df_risk.style.background_gradient(cmap='RdYlGn', subset=['CAGR (%)', 'Sharpe']).background_gradient(cmap='RdYlGn_r', subset=['Max Drawdown (%)', 'Beta (vs Mkt)']), use_container_width=True, hide_index=True)
+        st.dataframe(df_risk, use_container_width=True, hide_index=True)
