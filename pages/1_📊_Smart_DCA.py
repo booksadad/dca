@@ -446,15 +446,16 @@ if st.session_state['run_quant_engine']:
                         with col1:
                             with st.spinner("Risk Auditor (Python + AI)..."):
                                 prompt_cro = f"""
-                                You are a strict Risk Audit system. Do not roleplay.
-                                Objective: Audit the 'Portfolio State' for constraint violations. Explain anomalies.
+                                You are a strict Risk Audit system for an institutional quant fund. Do not roleplay.
+                                Objective: Audit the 'Portfolio State' for constraint violations (e.g. sector limits, concentration). 
+                                CRITICAL INSTRUCTION: The 'audit_explanation' MUST be written in THAI language. Provide a highly detailed, professional, and analytical explanation (at least 3-4 sentences) summarizing the risk profile, identifying any anomalies, and explaining why it is safe or dangerous.
                                 Portfolio State: {port_state_str}
                                 Return ONLY JSON:
                                 {{
                                   "risk_level": "LOW", "MEDIUM", or "HIGH",
                                   "liquidity_concern": boolean,
                                   "concentration_anomaly_detected": boolean,
-                                  "audit_explanation": "string"
+                                  "audit_explanation": "string (in THAI)"
                                 }}
                                 """
                                 res_cro = model.generate_content(prompt_cro).text
@@ -464,14 +465,15 @@ if st.session_state['run_quant_engine']:
                         with col2:
                             with st.spinner("Alpha Auditor (Python + AI)..."):
                                 prompt_pm = f"""
-                                You are an Alpha Validation system. Do not roleplay.
-                                Objective: Verify if 'proposed_buys' aligns with high 'Alpha_Score' candidates. Provide reasoning.
+                                You are an Alpha Validation system for an institutional quant fund. Do not roleplay.
+                                Objective: Verify if 'proposed_buys' aligns with high 'Alpha_Score' candidates.
+                                CRITICAL INSTRUCTION: The 'audit_explanation' MUST be written in THAI language. Provide a highly detailed, professional, and analytical explanation (at least 3-4 sentences). Explain exactly why the alignment score is what it is, why the system might have chosen defensive stocks over top alpha stocks (if applicable), and explicitly mention the missed opportunities.
                                 Portfolio State: {port_state_str}
                                 Return ONLY JSON:
                                 {{
                                   "alpha_alignment_score": float (0.0 to 1.0),
                                   "missed_opportunities": ["Ticker1", "Ticker2"],
-                                  "audit_explanation": "string"
+                                  "audit_explanation": "string (in THAI)"
                                 }}
                                 """
                                 res_pm = model.generate_content(prompt_pm).text
