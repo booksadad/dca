@@ -72,12 +72,11 @@ THESIS_DB = {
 
 if 'dca_budget' not in st.session_state: st.session_state['dca_budget'] = 500.0 
 if 'min_order_thb' not in st.session_state: st.session_state['min_order_thb'] = 50.0
-# 🧠 อัปเกรด: สร้างชิปความจำให้ระบบ
 if 'system_run' not in st.session_state: st.session_state['system_run'] = False
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
-st.title("🛡️ QUANT-HQ DCA (V.50.19 Anti-Amnesia AI)")
-st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(ผสาน AI คุมประพฤติโพยสั่งซื้อ 100% Stable)**")
+st.title("🛡️ QUANT-HQ DCA (V.Ultimate 5-Agent Board)")
+st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(สมการคณิตศาสตร์ ผสาน บอร์ดบริหาร 5 อรหันต์)**")
 st.markdown("---")
 
 # ==========================================
@@ -138,7 +137,6 @@ current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], 
 sniper_msg, bl_msg, lambda_msg, fomo_msg = "", "", "", ""
 actual_budget = budget 
 
-# 🧠 อัปเกรด: บันทึกความจำลงชิป
 if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
     st.session_state['system_run'] = True
 
@@ -191,10 +189,6 @@ if st.session_state['system_run']:
         
         ann_ret = returns_1y.mean() * 252
         ann_vol = returns_1y.std() * np.sqrt(252)
-        sharpe_ratio = ann_ret / ann_vol
-        downside_returns = returns_1y.copy()
-        downside_returns[downside_returns > 0] = 0
-        sortino_ratio = ann_ret / (downside_returns.std() * np.sqrt(252))
         
         ret_3m = prices_1y.pct_change(periods=63).iloc[-1]
         ret_6m = prices_1y.pct_change(periods=126).iloc[-1]
@@ -222,7 +216,6 @@ if st.session_state['system_run']:
         final_df['Max_Drawdown'] = final_df['Ticker'].map(max_dd)
         
         final_df = final_df.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
-        final_df.insert(0, 'Rank', range(1, len(final_df) + 1))
         
         port_df = final_df[final_df['Ticker'].isin(my_portfolio)].copy()
         port_df['Current'] = port_df['Ticker'].map(current_thb)
@@ -298,7 +291,6 @@ if st.session_state['system_run']:
                 port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
         else: 
-            status_box.update(label=f"🛡️ ดำเนินงานจัดสัดส่วนแบบกระจายความเสี่ยงขั้นสูงสุด (Risk Parity)...")
             port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
             port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
@@ -392,13 +384,13 @@ if st.session_state['system_run']:
                 for _, row in sell_list.iterrows(): text_sell += f"🔻 {row['หุ้น']} = ขาย {row['ขาย']} บ.\n"
             st.code(text_sell, language="text")
 
-      # ==========================================
-        # 🤖 THE 0.1% QUANT BOARD (5-Agent Architecture)
+        # ==========================================
+        # 🤖 THE 0.1% QUANT BOARD (5-Agent Engine)
         # ==========================================
         st.markdown("---")
-        st.markdown("### 🏛️ บอร์ดบริหารกองทุน (The 0.1% Quant Board)")
+        st.markdown("### 🏛️ บอร์ดบริหารกองทุน (The 0.1% Quant Board Simulation)")
         
-        if st.button("⚖️ เรียกประชุมบอร์ดบริหาร (Run 5-Agent Simulation)", type="primary"):
+        if st.button("⚖️ เรียกประชุมบอร์ดบริหารเพื่อสแกนกลยุทธ์", type="primary"):
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
                 st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings -> Secrets")
@@ -406,108 +398,103 @@ if st.session_state['system_run']:
                 try:
                     import google.generativeai as genai
                     genai.configure(api_key=api_key)
-                    # ใช้ Flash-Lite เพื่อความรวดเร็วในการรัน 5 ตัวติดกัน
                     model = genai.GenerativeModel('gemini-3.1-flash-lite')
                     
-                    # 📊 ข้อมูลตั้งต้นสำหรับที่ประชุม
-                    buy_str = "\n".join([f"- {row['หุ้น']}: ซื้อ {row['ซื้อ']} บาท" for _, row in buy_list.iterrows()])
-                    if not buy_str: buy_str = "- ไม่มีคำสั่งซื้อในรอบนี้"
+                    buy_txt = "\n".join([f"- {row['หุ้น']}: ซื้อ {row['ซื้อ']} บาท" for _, row in buy_list.iterrows()])
+                    if not buy_txt: buy_txt = "- ไม่มีคำสั่งซื้อในรอบนี้ (ระบบสั่งพักกระสุน)"
                     current_port_str = ", ".join([f"{row['หุ้น']} ({row['ทุนเดิม']} บ.)" for _, row in out.iterrows() if row['ทุนเดิม'] > 0])
                     if not current_port_str: current_port_str = "พอร์ตว่างเปล่า"
                     top_alpha_str = ", ".join(final_df['Ticker'].head(5).tolist())
 
                     board_container = st.container()
-                    
                     with board_container:
-                        st.markdown("#### 📝 บันทึกการประชุม (Meeting Minutes)")
+                        st.markdown("#### 📝 บันทึกการประชุมบอร์ดสถาบัน (Meeting Minutes)")
                         
                         # -----------------------------------------
-                        # 🚀 1. The Alpha PM (นำเสนอแผนบุก)
+                        # 🚀 1. The Alpha PM (หน่วยบุกทะลวง)
                         # -----------------------------------------
-                        with st.spinner("🚀 PM กำลังร่างแผนโจมตี..."):
+                        with st.spinner("🚀 PM กำลังคำนวณเป้าหมายบุก..."):
                             prompt_pm = f"""
-                            คุณคือ 🚀 'The Alpha PM' (ผู้จัดการกองทุนสายบุก) หิวโหย Alpha และเกลียดการถือเงินสด
-                            VIX={vix_current:.1f}, หุ้นในพอร์ต={current_port_str}, จ่าฝูง Alpha={top_alpha_str}
-                            โพยสั่งซื้อตั้งต้นจากสมการ: {buy_str}
+                            คุณคือ 🚀 'The Alpha PM' ผู้จัดการกองทุนสายบุก (Aggressive Growth) 0.1% ของโลก เกลียดเงินสดเฉยๆ
+                            Context: VIX={vix_current:.1f}, พอร์ตเดิม={current_port_str}, จ่าฝูง Alpha={top_alpha_str}
+                            โพยตั้งต้นของระบบ: {buy_txt}
                             งบ: {actual_budget} บาท
                             
-                            คำสั่ง: 
-                            - มองข้ามความเสี่ยง (เดี๋ยว CRO จัดการเอง) ให้เสนอแผน "บุกทะลวง" ที่สุด 
-                            - ถ้าโพยตั้งต้นมันปอดแหก (ซื้อหุ้น Defensive) ให้ด่า แล้วเสนอให้ดึงหุ้นจาก 'จ่าฝูง Alpha' มาเสียบแทน
-                            - ตอบสั้นๆ ดุดัน 2-3 บรรทัด ห้ามมีคำเกริ่นนำ
+                            คำสั่ง:
+                            - เสนอแผนบุกที่ดุดันที่สุดเพื่อล่า Alpha ห้ามปอดแหก
+                            - หากโพยตั้งต้นปอดแหกไปดึงหุ้น Defensive ให้ด่าระบบ แล้วเสนอโยกงบไปเข้า 'จ่าฝูง Alpha' ({top_alpha_str}) 
+                            - ❌ ห้ามคิดเลขเงินเอง ให้บอกทิศทางอย่างเดียวสั้นๆ 2 บรรทัด ห้ามมีคำเกริ่นนำ
                             """
                             pm_plan = model.generate_content(prompt_pm).text
                             st.success(f"**🚀 1. The Alpha PM:**\n{pm_plan}")
 
                         # -----------------------------------------
-                        # 🌐 2. The Macro-Quant Architect (เช็กสภาพอากาศ)
+                        # 🌐 2. The Macro-Quant Architect (สถาปนิกกลยุทธ์มหภาค)
                         # -----------------------------------------
-                        with st.spinner("🌐 Architect กำลังประเมินสภาวะตลาด..."):
+                        with st.spinner("🌐 Architect กำลังสแกนความสัมพันธ์มหภาค..."):
                             prompt_architect = f"""
-                            คุณคือ 🌐 'Macro-Quant Architect' สุขุม เยือกเย็น ประเมินสถิติและสภาวะตลาด
-                            VIX={vix_current:.1f}
-                            แผนของ PM: {pm_plan}
+                            คุณคือ 🌐 'Macro-Quant Architect' อัจฉริยะระบบกลยุทธ์ภาพใหญ่ 0.1% ของโลก ไร้อารมณ์
+                            Context: VIX={vix_current:.1f}
+                            แผนบุกของ PM: {pm_plan}
                             
-                            คำสั่ง: 
-                            - ประเมินว่าค่า VIX ปัจจุบัน เอื้อต่อความบ้าบิ่นของแผน PM หรือไม่?
-                            - ถ้า VIX ต่ำกว่า 20 ให้ไฟเขียว ถ้าเกิน 25 ให้ด่า PM ว่ากำลังพากองทุนไปตาย 
-                            - ตอบสั้นๆ เชิงสถิติ 2 บรรทัด ห้ามวิเคราะห์งบการเงิน
+                            คำสั่ง:
+                            - ประเมินแผนบุกของ PM ด้วยสถิติและดัชนีความกลัว VIX ปัจจุบัน
+                            - ถ้า VIX < 20 ให้ไฟเขียวสาย High-Beta ถ้า VIX > 25 ให้สกัดแผนบุกของ PM ว่าเป็นกับดักสภาพคล่อง
+                            - ❌ ห้ามคิดเลขเงินเองหรือดูงบรายตัว ตอบเฉพาะความเสี่ยงเชิงสถิติภาพใหญ่ 2 บรรทัด
                             """
                             architect_view = model.generate_content(prompt_architect).text
                             st.info(f"**🌐 2. The Macro Architect:**\n{architect_view}")
 
                         # -----------------------------------------
-                        # 🛡️ 3. The Ruthless CRO (สกัดจุดตาย)
+                        # 🛡️ 3. The Ruthless CRO (ผู้คุมกฎความเสี่ยงขั้นเด็ดขาด)
                         # -----------------------------------------
-                        with st.spinner("🛡️ CRO กำลังคำนวณ Tail Risk..."):
+                        with st.spinner("🛡️ CRO กำลังคำนวณ Tail Risk และการกระจุกตัว..."):
                             prompt_cro = f"""
-                            คุณคือ 🛡️ 'Ruthless CRO' ยมบาลประจำพอร์ต ขี้ระแวงขั้นสุด เกลียดการกระจุกตัว
-                            พอร์ตเดิม: {current_port_str}
-                            แผนของ PM: {pm_plan}
-                            ความเห็น Architect: {architect_view}
+                            คุณคือ 🛡️ 'Ruthless CRO' ยมบาลคุมความเสี่ยงพอร์ต 0.1% ของโลก ขี้ระแวงขั้นสุด
+                            Context: พอร์ตปัจจุบัน={current_port_str}
+                            แผนของ PM: {pm_plan} | ความเห็น Architect: {architect_view}
                             
                             คำสั่ง:
-                            - หาจุดตาย! ถ้าแผนของ PM ไปทับซ้อนกับ Sector ที่เรามีเยอะแล้วในพอร์ตเดิม ให้สั่ง "แบน" (Kill Switch) หุ้นตัวนั้นทิ้งทันที!
-                            - ถ้ากระจายตัวดีอยู่แล้ว ให้ปล่อยผ่าน 
-                            - ตอบสั้นๆ ปากคอเราะร้าย 2 บรรทัด ห้ามเสนอหุ้นตัวใหม่ (คุณมีสิทธิ์แค่สั่งฆ่า)
+                            - หาจุดตายเชิงโครงสร้าง (Tail Risk/Overweight)! หากแผน PM หรือโพยระบบสั่งอัดหุ้นกลุ่มที่พอร์ตเดิมกระจุกตัวเกินไป สั่ง 'แบน' (Kill Switch) ทันที เพื่อป้องกันการขาดทุนถาวร (Permanent Loss)
+                            - ❌ คุณมีสิทธิ์แค่สั่งฆ่า ห้ามเสนอหุ้นตัวใหม่เข้าพอร์ตเด็ดขาด ตอบดุดันขวานผ่าซาก 2 บรรทัด
                             """
                             cro_view = model.generate_content(prompt_cro).text
                             st.warning(f"**🛡️ 3. The Ruthless CRO:**\n{cro_view}")
 
                         # -----------------------------------------
-                        # ⚙️ 4. The Micro-Execution Engineer (คุมงบ 500 บ.)
+                        # ⚙️ 4. The Micro-Execution Engineer (วิศวกรโครงสร้างคำสั่งซื้อ)
                         # -----------------------------------------
-                        with st.spinner("⚙️ Engineer กำลังคำนวณต้นทุนหน้าตัก..."):
+                        with st.spinner("⚙️ Engineer กำลังร่อนตะแกรงงบประมาณโลกความจริง..."):
                             prompt_engineer = f"""
-                            คุณคือ ⚙️ 'Execution Engineer' นักบัญชีจอมงก เจ้าระเบียบ
-                            งบประมาณ: {actual_budget} บาท (กฎเหล็กแอป Dime!: ซื้อขั้นต่ำ 50 บาทต่อ 1 ออเดอร์)
-                            บทสรุปเบื้องต้น: แผนบุกคือ ({pm_plan}) และข้อห้ามคือ ({cro_view})
+                            คุณคือ ⚙️ 'Execution Engineer' วิศวกรคุมต้นทุนคำสั่งซื้อจอมงก 0.1% ของโลก
+                            Context: งบรวม={actual_budget} บาท (กฎเหล็กแอป Dime! สั่งซื้อขั้นต่ำ 50 บาท/หุ้น)
+                            แผนที่ผ่านด่านมา: แผนบุกคือ ({pm_plan}) และ ข้อห้ามของ CRO คือ ({cro_view})
                             
                             คำสั่ง:
-                            - จัดการตัวเลข! ถ้างบ 500 บาทถูกหั่นไปซื้อหุ้นหลายตัวเกินไปจนต่ำกว่า 50 บาท หรือเสียเปรียบ Spread ให้ด่าว่า "โง่เขลา!" แล้วสั่งยุบรวมให้เหลือซื้อแค่ 1-2 ตัวเท่านั้น
-                            - ห้ามเลือกหุ้นเอง ให้เอาตัวที่รอดจาก CRO มาแบ่งเงินให้คุ้มค่าที่สุด
-                            - ตอบสั้นๆ เน้นตัวเลข 2 บรรทัด
+                            - ควบคุมความสูญเปล่า! ถ้างบ 500 บาทถูกหั่นยิบย่อยจนกระจายไปซื้อหุ้นหลายตัวเกินไปจนเสี่ยงโดน Slippage/ค่าธรรมเนียมกิน ให้สั่งยุบรวม (Rounding) ทันที ให้เน้นอัดแค่ 1-2 ตัวที่คุ้มค่าที่สุด
+                            - ❌ ห้ามเลือกหุ้นใหม่เอง จัดการตัวเลขจากสิ่งที่ส่งลงมาเท่านั้น ตอบกระชับเน้นประสิทธิภาพ 2 บรรทัด
                             """
                             engineer_view = model.generate_content(prompt_engineer).text
                             st.error(f"**⚙️ 4. The Execution Engineer:**\n{engineer_view}")
 
                         # -----------------------------------------
-                        # ⚖️ 5. The Global CIO (ฟันธง!)
+                        # ⚖️ 5. The Global CIO (กรรมการผู้ชี้ขาด)
                         # -----------------------------------------
-                        with st.spinner("⚖️ CIO กำลังเคาะมติที่ประชุม..."):
+                        with st.spinner("⚖️ CIO กำลังตบโต๊ะสั่งการคำสั่งสวรรค์..."):
                             prompt_cio = f"""
-                            คุณคือ ⚖️ 'Global CIO' ประธานผู้มีอำนาจชี้ขาด เด็ดขาด ไร้ความลังเล
+                            คุณคือ ⚖️ 'Global CIO' ประธานกรรมการผู้ฟันธงเด็ดขาด 0.1% ของโลก ไร้อคติ 
                             
-                            รายงานบอร์ด:
-                            - PM เสนอ: {pm_plan}
-                            - Architect เสริม: {architect_view}
-                            - CRO เตือน: {cro_view}
-                            - Engineer สรุปตัวเลข: {engineer_view}
+                            รายงานการประชุมบอร์ดบริหาร:
+                            - PM เสนอแผนล่า Alpha: {pm_plan}
+                            - Architect สแกนสภาพตลาด: {architect_view}
+                            - CRO ตรวจจับจุดตายพอร์ต: {cro_view}
+                            - Engineer รวบรวมตัวเลขงบ: {engineer_view}
                             
-                            คำสั่ง: เคาะโต๊ะฟันธง! สรุปทั้งหมดออกมาเป็นรูปแบบนี้ (ห้ามมีคำอื่น):
+                            คำสั่ง: 
+                            นำข้อมูลระดับ 0.1% ทั้งหมดมาชั่งน้ำหนักและออกคำสั่งปฏิบัติการขั้นสุดท้าย ห้ามพูดจาประนีประนอมหรือตอบกำกวม โครงสร้างต้องเป๊ะตามนี้เท่านั้น:
                             
-                            1. 🏁 **มติที่ประชุม (Verdict):** [🟢 EXECUTE (ลุย) / 🟡 OVERRIDE (ปรับแก้) / 🔴 VETO (ถือเงินสด)]
-                            2. 🎯 **The Action Plan:** สรุปกลยุทธ์ 1 ประโยค (บอกชื่อหุ้นและไอเดียการจัดสรรงบ {actual_budget} บาท ที่นำไปกดซื้อในแอปได้จริง)
+                            1. 🏁 **มติที่ประชุม (Verdict):** [🟢 EXECUTE (ยิงตามโพยสมการ) / 🟡 OVERRIDE (ฉีกโพยสลับหุ้นตามบอร์ด) / 🔴 VETO (คว่ำกระดานถือเงินสด)]
+                            2. 🎯 **The Action Plan:** สรุปกลยุทธ์ 1 ประโยคเด็ดขาด (ระบุชื่อหุ้นและแนวทางบริหารงบ {actual_budget} บาท เพื่อเอาไปกดซื้อจริงในแอปทันที ห้ามคิดเลขหลอนเอง)
                             """
                             cio_verdict = model.generate_content(prompt_cio).text
                             
