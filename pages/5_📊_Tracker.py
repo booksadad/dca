@@ -145,5 +145,6 @@ if st.button("🚀 รันระบบ Backtest & Analytics", type="primary"):
             })
             
         # 🛠️ ปิดบั๊กตาราง: ตัด style.background_gradient ออก ใช้ตารางธรรมดาที่เสถียร 100%
+       # 🛠️ ปิดบั๊กตาราง: ใช้ตารางธรรมดาที่เสถียร 100% ไม่มี Error
         df_risk = pd.DataFrame(risk_data).round(2)
         st.dataframe(df_risk, use_container_width=True, hide_index=True)
