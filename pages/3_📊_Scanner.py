@@ -32,6 +32,11 @@ def get_macro_data():
 def scan_alpha_universe(universe):
     # 1. ดึงราคาย้อนหลังเพื่อหา Momentum & Volatility
     prices = yf.download(universe, period="1y", progress=False)['Close']
+    
+    # กรณีสแกนหุ้นแค่ตัวเดียว yfinance จะคืนค่ามาเป็น Series ต้องแปลงเป็น DataFrame ก่อน
+    if isinstance(prices, pd.Series):
+        prices = prices.to_frame(name=universe[0])
+        
     returns = prices.pct_change().dropna()
     
     ret_3m = prices.pct_change(periods=63).iloc[-1]
@@ -41,7 +46,13 @@ def scan_alpha_universe(universe):
     # Risk-Adjusted Momentum
     mom_score = ((ret_3m * 0.4) + (ret_6m * 0.6)) / vol 
     
-    df = pd.DataFrame({'Ticker': prices.columns, 'Momentum': mom_score, 'Volatility': vol}).dropna()
+    # 🛠️ แก้ไขบั๊ก Pandas Index ตรงนี้: บังคับจับคู่ Ticker ให้ตรงกับคะแนน
+    df = pd.DataFrame({
+        'Momentum': mom_score, 
+        'Volatility': vol
+    })
+    df['Ticker'] = df.index # ดึงชื่อหุ้นจาก Index มาสร้างเป็นคอลัมน์ใหม่
+    df = df.dropna().reset_index(drop=True)
     
     # 2. ดึงงบการเงิน (Fundamentals)
     metrics = []
@@ -67,6 +78,11 @@ def scan_alpha_universe(universe):
             metrics.append({'Ticker': t, 'ROA': np.nan, 'Margin': np.nan, 'PEG': np.nan, 'FCF_Yield': np.nan})
             
     df_metrics = pd.DataFrame(metrics)
+    
+    # 🛠️ ป้องกันกรณีดึงงบไม่ได้เลยแล้วตารางว่างเปล่า
+    if df_metrics.empty:
+        df_metrics = pd.DataFrame(columns=['Ticker', 'ROA', 'Margin', 'PEG', 'FCF_Yield'])
+        
     final_df = pd.merge(df, df_metrics, on='Ticker')
     
     # เติมค่าว่างด้วยค่ามัธยฐานของกลุ่มเพื่อไม่ให้สมการพัง
@@ -74,7 +90,6 @@ def scan_alpha_universe(universe):
         final_df[col] = final_df[col].fillna(final_df[col].median())
         
     # 3. ให้คะแนน Alpha Score (The 0.1% Formula)
-    # PEG ยิ่งต่ำยิ่งดี เลยต้องคูณ -1 กลับทิศทาง Z-Score
     final_df['Z_Mom'] = calc_zscore(final_df['Momentum'])
     final_df['Z_Quality'] = (calc_zscore(final_df['ROA']) + calc_zscore(final_df['Margin'])) / 2
     final_df['Z_Value'] = (calc_zscore(final_df['FCF_Yield']) + (calc_zscore(final_df['PEG']) * -1)) / 2
