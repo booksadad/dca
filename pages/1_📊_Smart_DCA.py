@@ -62,7 +62,6 @@ SECTOR_DB = {
     "🌿 Green": ["FSLR", "ENPH", "NEE", "SEDG"]
 }
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
-DEFENSIVE_SECTORS = ["🛍️ Consumer", "🩺 Health"]
 
 THESIS_DB = {
     "NVDA": "AI Infra Dominance", "MSFT": "Cloud & OS Monopoly",
@@ -73,10 +72,12 @@ THESIS_DB = {
 
 if 'dca_budget' not in st.session_state: st.session_state['dca_budget'] = 500.0 
 if 'min_order_thb' not in st.session_state: st.session_state['min_order_thb'] = 50.0
+# 🧠 อัปเกรด: สร้างชิปความจำให้ระบบ
+if 'system_run' not in st.session_state: st.session_state['system_run'] = False
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
-st.title("🛡️ QUANT-HQ DCA (V.50.18 AI Trade Reviewer)")
-st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(ผสาน AI คุมประพฤติโพยสั่งซื้อ)**")
+st.title("🛡️ QUANT-HQ DCA (V.50.19 Anti-Amnesia AI)")
+st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(ผสาน AI คุมประพฤติโพยสั่งซื้อ 100% Stable)**")
 st.markdown("---")
 
 # ==========================================
@@ -137,11 +138,16 @@ current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], 
 sniper_msg, bl_msg, lambda_msg, fomo_msg = "", "", "", ""
 actual_budget = budget 
 
+# 🧠 อัปเกรด: บันทึกความจำลงชิป
 if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
+    st.session_state['system_run'] = True
+
+if st.session_state['system_run']:
     if not my_portfolio: 
         st.error("⚠️ โปรดระบุชื่อหุ้นก่อนครับ")
+        st.session_state['system_run'] = False
     else:
-        status_box = st.status(f"🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=True)
+        status_box = st.status(f"🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=False)
         
         benchmark = 'VOO'
         vix_ticker = '^VIX'
@@ -387,7 +393,7 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
             st.code(text_sell, language="text")
 
         # ==========================================
-        # 🤖 THE AI TRADE REVIEWER (ฟีเจอร์ใหม่ V.50.18)
+        # 🤖 THE AI TRADE REVIEWER 
         # ==========================================
         st.markdown("---")
         st.markdown("### 🤖 ให้ AI ตรวจทานความเสี่ยงก่อนโอนเงิน")
@@ -397,13 +403,12 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
             if not api_key:
                 st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings -> Secrets")
             else:
-                with st.spinner("AI กำลังวิเคราะห์สัดส่วนและความเสี่ยง..."):
+                with st.spinner("AI กำลังรับคำสั่ง... คอยสักครู่ครับ"):
                     try:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
                         model = genai.GenerativeModel('gemini-3.1-flash-lite')
                         
-                        # สร้างประโยคสรุปโพยส่งให้ AI
                         buy_str = "\n".join([f"- {row['หุ้น']}: {row['ซื้อ']} บาท ({row['Thesis']})" for _, row in buy_list.iterrows()])
                         if not buy_str: buy_str = "- ไม่มีคำสั่งซื้อในรอบนี้ (สะสมเงินสด)"
                         
