@@ -7,7 +7,7 @@ import os, sys
 import time
 import plotly.express as px
 from scipy.optimize import minimize
-from scipy.signal import argrelextrema 
+from scipy.signal import argrelextrema
 
 warnings.filterwarnings("ignore")
 
@@ -406,7 +406,7 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
             st.code(text_sell, language="text")
 
         # ==========================================
-        # 🏆 🌟 เรดาร์สแกนหุ้นจ่าฝูง (TOP 20 ALPHA LEADERBOARD) - กลับมาอยู่ในสคริปต์หลักแล้ว!
+        # 🏆 🌟 เรดาร์สแกนหุ้นจ่าฝูง (TOP 20 ALPHA LEADERBOARD)
         # ==========================================
         st.markdown("---")
         st.subheader("🏆 📡 [RADAR] TOP 20 ALPHA (รวมสถิติสากลความเสี่ยงคัดกรอง)")
@@ -459,7 +459,8 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
                 col_bt1.metric("CAGR พอร์ตเรา (เฉลี่ยต่อปี)", f"{(((port_cum.iloc[-1] / 100) ** (1/yp)) - 1)*100:.2f}%")
                 col_bt2.metric("CAGR ตลาด S&P 500", f"{(((voo_cum.iloc[-1] / 100) ** (1/yp)) - 1)*100:.2f}%")
             except Exception as e: st.error(f"ข้อมูลหุ้นบางตัวสั้นกว่า 3 ปี ({e})")
-# ==========================================
+
+        # ==========================================
         # 🤖 THE 0.01% QUANT BOARD (God Mode Architecture)
         # ==========================================
         st.markdown("---")
@@ -481,16 +482,16 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
                     current_port_str = ", ".join([f"{row['หุ้น']} ({row['ทุนเดิม']} บ.)" for _, row in out.iterrows() if row['ทุนเดิม'] > 0])
                     if not current_port_str: current_port_str = "พอร์ตว่างเปล่า"
                     
-                    # 📊 2. เตรียมข้อมูล Sector ให้ CRO (แก้จุดอ่อนตาบอดสัดส่วน)
+                    # 📊 2. เตรียมข้อมูล Sector ให้ CRO
                     sector_str = ", ".join([f"{row['Sector']}: {(row['Current']/total_port_value)*100:.1f}%" if total_port_value > 0 else f"{row['Sector']}: 0%" for _, row in sector_totals.iterrows()])
                     
-                    # 📊 3. เตรียมข้อมูล Alpha พร้อมคะแนนให้ PM (แก้จุดอ่อนจ่าฝูงไร้เหตุผล)
+                    # 📊 3. เตรียมข้อมูล Alpha พร้อมคะแนนให้ PM
                     top_alpha_details = ", ".join([f"{row['Ticker']} (Alpha Score: {row['Alpha_Score']:.2f})" for _, row in final_df.head(5).iterrows()])
                     try:
                         alpha_df = pd.read_csv("alpha_radar.csv")
-                        top_alpha_str = ", ".join(alpha_df['Alpha_Tickers'].tolist()) # ชื่อจากหน้า Scanner
+                        top_alpha_str = ", ".join(alpha_df['Alpha_Tickers'].tolist())
                     except:
-                        top_alpha_str = top_alpha_details # ถ้าหาไม่เจอให้ใช้จากสมการในหน้านี้
+                        top_alpha_str = top_alpha_details
 
                     board_container = st.container()
                     with board_container:
