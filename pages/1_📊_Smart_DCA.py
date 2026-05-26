@@ -392,38 +392,58 @@ if st.session_state['system_run']:
                 for _, row in sell_list.iterrows(): text_sell += f"🔻 {row['หุ้น']} = ขาย {row['ขาย']} บ.\n"
             st.code(text_sell, language="text")
 
-        # ==========================================
-        # 🤖 THE AI TRADE REVIEWER 
+       # ==========================================
+        # 🤖 THE AI TRADE REVIEWER (V.10/10 Full Context)
         # ==========================================
         st.markdown("---")
-        st.markdown("### 🤖 ให้ AI ตรวจทานความเสี่ยงก่อนโอนเงิน")
+        st.markdown("### 🤖 ให้ AI ตรวจทานความเสี่ยง (CRO) ก่อนโอนเงิน")
         
-        if st.button("🔍 ตรวจประเมินโพยสั่งซื้อด้วย AI", type="secondary"):
+        if st.button("🔍 ส่งโพยให้ Chief Risk Officer ตรวจสอบ", type="secondary"):
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
                 st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings -> Secrets")
             else:
-                with st.spinner("AI กำลังรับคำสั่ง... คอยสักครู่ครับ"):
+                with st.spinner("CRO กำลังสแกนความเสี่ยงของพอร์ตโดยรวม..."):
                     try:
                         import google.generativeai as genai
                         genai.configure(api_key=api_key)
                         model = genai.GenerativeModel('gemini-3.1-flash-lite')
                         
-                        buy_str = "\n".join([f"- {row['หุ้น']}: {row['ซื้อ']} บาท ({row['Thesis']})" for _, row in buy_list.iterrows()])
-                        if not buy_str: buy_str = "- ไม่มีคำสั่งซื้อในรอบนี้ (สะสมเงินสด)"
+                        # 1. ดึงข้อมูล "โพยสั่งซื้อใหม่"
+                        buy_str = "\n".join([f"- {row['หุ้น']}: ซื้อ {row['ซื้อ']} บาท ({row['Thesis']})" for _, row in buy_list.iterrows()])
+                        if not buy_str: buy_str = "- ไม่มีคำสั่งซื้อในรอบนี้ (ระบบสั่งพักเงินสด)"
                         
+                        # 2. ดึงข้อมูล "พอร์ตเดิมที่มีอยู่" (นี่คือจุดที่ทำให้ได้ 10/10)
+                        current_port_str = ", ".join([f"{row['หุ้น']} ({row['ทุนเดิม']} บ.)" for _, row in out.iterrows() if row['ทุนเดิม'] > 0])
+                        if not current_port_str: current_port_str = "พอร์ตว่างเปล่า (เพิ่งเริ่มตั้งต้น)"
+                        
+                        # 3. วิศวกรรมคำสั่ง 10/10 
+                        # ⚔️ วิศวกรรมคำสั่ง 10/10 (นโยบายพอร์ต: Aggressive Growth เน้นบุก!)
                         prompt = f"""
-                        ในฐานะ Risk Manager สาย Quant สถาบัน 
-                        โปรดตรวจสอบโพยคำสั่งซื้อ DCA ประจำงวดนี้ ด้วยงบ {actual_budget} บาท 
-                        สภาวะตลาดปัจจุบัน: ดัชนีความกลัว VIX = {vix_current:.1f}
+                        ในฐานะ Chief Risk Officer (CRO) ประจำกองทุน Quant ที่มีนโยบายพอร์ตแบบ "Aggressive Growth (เน้นบุก ล่า Alpha)"
+                        จงตรวจสอบโพยคำสั่งซื้อ DCA ประจำงวด ก่อนที่ผู้จัดการกองทุนจะส่งคำสั่งเข้าตลาด
                         
-                        รายการสั่งซื้อที่ระบบคณิตศาสตร์คำนวณมา:
+                        📊 [ข้อมูลหน้าตัก (Context)]
+                        - นโยบายหลัก (Mandate): เน้นบุกหนัก (High-Beta / Compounders) ยอมรับความผันผวนได้สูงมาก
+                        - งบประมาณรอบนี้: {actual_budget} บาท (เงื่อนไขโลกความจริง: ซื้อขั้นต่ำ 50 บาท/หุ้น)
+                        - สภาวะตลาด (Regime): ดัชนีความกลัว VIX = {vix_current:.1f}
+                        - หุ้นที่มีอยู่ในพอร์ตตอนนี้: {current_port_str}
+                        
+                        🛒 [โพยคำสั่งซื้อจากระบบสมองกล (Proposed Trades)]
                         {buy_str}
                         
-                        วิเคราะห์สั้นๆ กระชับที่สุด เป็น Bullet (ห้ามเกริ่นนำ):
-                        1. ⚖️ สมดุลพอร์ต (Balance): เงินถูกเทไปกระจุกที่กลุ่มไหนมากเกินไปไหม?
-                        2. 🛡️ จุดอ่อนแฝง (Hidden Risk): มีความเสี่ยงระดับมหภาค (Macro) อะไรที่อาจกระทบตะกร้าหุ้นชุดนี้?
-                        3. 🏁 คำตัดสิน (Verdict): "อนุมัติให้ซื้อตามนี้" หรือ "ควรพักเงินสดรอดูสถานการณ์ก่อน" (ฟันธงมาเลย!)
+                        ⚠️ [คำสั่งปฏิบัติการ (Directives)]
+                        ห้ามเกริ่นนำ ห้ามมีคำลงท้าย ใช้ศัพท์ Quant สถาบัน (กระชับ/ดุดัน) วิเคราะห์ 3 ข้อ:
+                        
+                        1. ⚔️ พลังโจมตี (Aggressive Exposure): 
+                           - โพยชุดนี้ "บุกหนัก" สมใจนโยบายพอร์ตหรือไม่? 
+                           - ถ้า VIX ต่ำ (ตลาดกระทิง) แล้วระบบดันสั่งซื้อหุ้น Defensive (เช่น KO, JNJ) ให้ด่าระบบเลยว่าปอดแหกเกินไป!
+                        2. 🚨 จุดตายที่แท้จริง (Fatal Flaw): 
+                           - กองทุนเราไม่กลัวราคาเหวี่ยง (Volatility) ดังนั้นไม่ต้องเตือนเรื่องนี้! 
+                           - ให้หา "จุดตายระดับโครงสร้าง" ที่จะทำให้หุ้นที่สั่งซื้อ "เจ๊งหรือเสียเปรียบเชิงแข่งขันถาวร" แทน
+                        3. 🏁 CRO Verdict (คำตัดสินขั้นเด็ดขาด): 
+                           - ฟันธง 1 อย่าง: "🟢 APPROVED (ทะลวงบุก!)", "🟡 MODIFY (ลดกองหลัง เพิ่มกองหน้าตัวไหน?)", หรือ "🔴 VETO (ตลาดแพนิกหนัก ถือเงินสดรอช้อน)"
+                           - อธิบายเหตุผลแบบ Quant สายบุก สั้นๆ 1 ประโยค
                         """
                         
                         response = model.generate_content(prompt)
