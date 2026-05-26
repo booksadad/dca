@@ -4,25 +4,43 @@ import pandas as pd
 import numpy as np
 import warnings
 import os, sys
-import time
 import plotly.express as px
+from scipy.optimize import minimize
+from scipy.signal import argrelextrema 
 
 warnings.filterwarnings("ignore")
 
 # ==========================================
-# 🛠️ ฟังก์ชันคณิตศาสตร์ 
+# 🛠️ ฟังก์ชันคณิตศาสตร์และเครื่องมือ Quant
 # ==========================================
-def calc_zscore(series): return (series - series.mean()) / series.std()
+def calc_zscore(series): 
+    if series.std() == 0: return series - series.mean()
+    return (series - series.mean()) / series.std()
+
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
+
 def check_doi_risk(rsi_val):
     if rsi_val > 75: return 'ดอย (ซื้อระวัง)'
     elif rsi_val < 30: return 'ของถูก (เก็บสะสม)'
     return 'ปกติ'
+
+def find_sr_levels(series):
+    try:
+        current_price = series.iloc[-1]
+        local_mins = series.iloc[argrelextrema(series.values, np.less_equal, order=5)[0]]
+        local_maxs = series.iloc[argrelextrema(series.values, np.greater_equal, order=5)[0]]
+        supports = local_mins[local_mins < current_price].sort_values(ascending=False).unique()
+        resistances = local_maxs[local_maxs > current_price].sort_values(ascending=True).unique()
+        s1 = supports[0] if len(supports) > 0 else current_price * 0.95
+        s2 = supports[1] if len(supports) > 1 else s1 * 0.95
+        r1 = resistances[0] if len(resistances) > 0 else current_price * 1.05
+        return f"รับ: {s1:.1f}, {s2:.1f} | ต้าน: {r1:.1f}"
+    except: return "-"
 
 def block_print():
     sys.stdout = open(os.devnull, 'w')
@@ -32,7 +50,7 @@ def enable_print():
     sys.stderr = sys.__stderr__
 
 # ==========================================
-# 💾 ฐานข้อมูลความจำ & Thesis Layer (V.50.15)
+# 💾 ฐานข้อมูลถอดรหัสและ Thesis Layer 
 # ==========================================
 PORTFOLIO_FILE = "my_portfolio_data.csv"
 
@@ -46,7 +64,6 @@ SECTOR_DB = {
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
 DEFENSIVE_SECTORS = ["🛍️ Consumer", "🩺 Health"]
 
-# 🧠 Thesis Dictionary (อธิบายเหตุผลการลงทุน)
 THESIS_DB = {
     "NVDA": "AI Infra Dominance", "MSFT": "Cloud & OS Monopoly",
     "COST": "Membership Cashflow", "AVGO": "Custom Silicon / M&A",
@@ -58,8 +75,8 @@ if 'dca_budget' not in st.session_state: st.session_state['dca_budget'] = 500.0
 if 'min_order_thb' not in st.session_state: st.session_state['min_order_thb'] = 50.0
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
-st.title("🛡️ QUANT-HQ DCA (V.50.15 Institutional Edition)")
-st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(อัปเกรด: VIX Regime, Max Drawdown & Thesis Layer)**")
+st.title("🛡️ QUANT-HQ DCA (V.50.18 AI Trade Reviewer)")
+st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(ผสาน AI คุมประพฤติโพยสั่งซื้อ)**")
 st.markdown("---")
 
 # ==========================================
@@ -75,9 +92,10 @@ if os.path.exists(PORTFOLIO_FILE):
     except: pass
 
 st.sidebar.subheader("🗂️ หุ้นในพอร์ตของคุณ")
-tickers_input = st.sidebar.text_area("รายชื่อหุ้นที่ถืออยู่", default_tickers)
+tickers_input = st.sidebar.text_area("รายชื่อหุ้นที่ถืออยู่ (คั่นด้วยลูกน้ำ)", default_tickers)
 my_portfolio = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 st.sidebar.markdown("---")
+engine_choice = st.sidebar.radio("เข็มทิศการลงทุน:", ["🧠 Auto-Pilot (BL + Adaptive)", "🛡️ Safe Mode (Risk Parity)"])
 base_lambda = st.sidebar.slider("ระดับความกลัวตั้งต้น", 0.1, 10.0, 2.0, 0.1)
 
 # ==========================================
@@ -91,29 +109,40 @@ with col_input2:
     min_order_thb = st.number_input("🚦 ยอดซื้อขั้นต่ำต่อหุ้น (บาท)", 10, 500, int(st.session_state['min_order_thb']), 10)
     st.session_state['min_order_thb'] = float(min_order_thb)
 
+st.markdown("### 💼 1. ตรวจสอบพอร์ตปัจจุบัน")
+
 saved_dict = {}
 if os.path.exists(PORTFOLIO_FILE):
     try:
         saved_df = pd.read_csv(PORTFOLIO_FILE)
         if not saved_df.empty and "รายชื่อหุ้น" in saved_df.columns:
-            saved_dict = dict(zip(saved_df["รายชื่อหุ้น"], pd.to_numeric(saved_df["ยอดเงินปัจจุบัน (บาท)"], errors='coerce').fillna(0)))
+            saved_dict = dict(zip(saved_df["รายชื่อหุ้น"], pd.to_numeric(saved_df["ยอดเงินปัจจุบัน (บาท)"], errors='coerce').fillna(0.0)))
     except: pass
 
-default_rows = [{"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": float(saved_dict.get(t, 0))} for t in my_portfolio]
-st.session_state['portfolio_holdings'] = pd.DataFrame(default_rows)
-df_holdings_edited = st.data_editor(st.session_state['portfolio_holdings'], use_container_width=True, hide_index=True)
-df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
-current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], pd.to_numeric(df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"], errors='coerce').fillna(0)))
+default_rows = [{"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": float(saved_dict.get(t, 0.0))} for t in my_portfolio]
 
+if 'portfolio_holdings' not in st.session_state:
+    st.session_state['portfolio_holdings'] = pd.DataFrame(default_rows)
+else:
+    current_tickers_in_state = st.session_state['portfolio_holdings']['รายชื่อหุ้น'].tolist()
+    if current_tickers_in_state != my_portfolio:
+        st.session_state['portfolio_holdings'] = pd.DataFrame(default_rows)
+
+df_holdings_edited = st.data_editor(st.session_state['portfolio_holdings'], use_container_width=True, hide_index=True)
+df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"] = pd.to_numeric(df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"], errors='coerce').fillna(0.0)
+st.session_state['portfolio_holdings'] = df_holdings_edited
+df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
+current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
+
+sniper_msg, bl_msg, lambda_msg, fomo_msg = "", "", "", ""
 actual_budget = budget 
 
 if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
     if not my_portfolio: 
         st.error("⚠️ โปรดระบุชื่อหุ้นก่อนครับ")
     else:
-        status_box = st.status(f"🔮 เดินเครื่องสมองกลวิเคราะห์สภาวะตลาด...", expanded=True)
+        status_box = st.status(f"🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=True)
         
-        # 🧠 V.50.15: เพิ่ม VIX Index เพื่อจับ Regime ตลาด
         benchmark = 'VOO'
         vix_ticker = '^VIX'
         
@@ -121,31 +150,35 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
         market_data = yf.download([benchmark, vix_ticker], period="3y", progress=False)['Close']
         enable_print()
         
-        # จับสภาวะตลาด (Regime Detection)
         vix_current = market_data[vix_ticker].iloc[-1] if vix_ticker in market_data else 20.0
         sma200_voo = market_data[benchmark].rolling(200).mean().iloc[-1]
         is_market_crashing = market_data[benchmark].iloc[-1] < sma200_voo
         
+        is_panic = False
         if vix_current > 25:
-            st.error(f"🚨 **Market Regime: PANIC (VIX = {vix_current:.1f})** ตลาดตื่นตระหนก! ระบบลดเพดานหุ้นสายบุก")
+            st.error(f"🚨 **Market Regime: PANIC (VIX = {vix_current:.1f})** ตลาดเกิดความกลัวรุนแรง! ดึงเกราะความเสี่ยงขึ้น")
             is_panic = True
         elif vix_current < 15:
-            st.success(f"🐂 **Market Regime: BULL (VIX = {vix_current:.1f})** ตลาดกระทิง! ระบบเปิดเพดานสายบุกเต็มที่")
-            is_panic = False
+            st.success(f"🐂 **Market Regime: BULL (VIX = {vix_current:.1f})** ตลาดกระทิงนิ่งสงบ! ขยายเพดานสายบุกสุดตัว")
         else:
-            st.info(f"⚖️ **Market Regime: NORMAL (VIX = {vix_current:.1f})** ตลาดปกติ")
-            is_panic = False
+            st.info(f"⚖️ **Market Regime: NORMAL (VIX = {vix_current:.1f})** ตลาดทำงานในสภาวะปกติ")
 
+        voo_ret = market_data[benchmark].pct_change().dropna()
+        vol_30d = voo_ret.tail(30).std() * np.sqrt(252)
+        vol_252d = voo_ret.tail(252).std() * np.sqrt(252)
+        vol_ratio = vol_30d / vol_252d if vol_252d > 0 else 1.0
+        dynamic_lambda = base_lambda * vol_ratio
+        
         market_proxy = [t for sublist in SECTOR_DB.values() for t in sublist]
         universe_list = list(set(my_portfolio + market_proxy)) 
         
         block_print()
-        prices_1y = yf.download(universe_list, period="1y", progress=False)['Close']
+        prices_3y = yf.download(universe_list, period="3y", progress=False)['Close']
         enable_print()
         
+        prices_1y = prices_3y.tail(252) 
         returns_1y = prices_1y.pct_change().dropna()
         
-        # คำนวณ Max Drawdown (MDD)
         roll_max = prices_1y.cummax()
         drawdown = (prices_1y - roll_max) / roll_max
         max_dd = drawdown.min() * 100
@@ -153,7 +186,6 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
         ann_ret = returns_1y.mean() * 252
         ann_vol = returns_1y.std() * np.sqrt(252)
         sharpe_ratio = ann_ret / ann_vol
-        
         downside_returns = returns_1y.copy()
         downside_returns[downside_returns > 0] = 0
         sortino_ratio = ann_ret / (downside_returns.std() * np.sqrt(252))
@@ -165,7 +197,7 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
         
         df = pd.DataFrame({'Ticker': prices_1y.columns, 'Raw_Mom': (avg_mom / vol), 'Price': prices_1y.iloc[-1]}).dropna().reset_index(drop=True)
         
-        quality_data, rsi_data = [], {}
+        quality_data, rsi_data, sr_data = [], {}, {}
         for t in df['Ticker'].tolist():
             roa, margin = None, None
             try:
@@ -175,13 +207,12 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
                 roa, margin = info.get('returnOnAssets'), info.get('profitMargins')
             except: enable_print()
             quality_data.append({'Ticker': t, 'ROA': roa * 100 if roa is not None else np.nan, 'Margin': margin * 100 if margin is not None else np.nan})
-            rsi_data[t] = calculate_rsi(prices_1y[t].dropna()).iloc[-1] 
+            series_clean = prices_1y[t].dropna()
+            rsi_data[t] = calculate_rsi(series_clean).iloc[-1] if len(series_clean) > 14 else 50.0
+            sr_data[t] = find_sr_levels(series_clean)
             
         final_df = pd.merge(df, pd.DataFrame(quality_data), on='Ticker')
         final_df['Alpha_Score'] = (calc_zscore(final_df['Raw_Mom']) * 0.5) + (calc_zscore(final_df['ROA'].fillna(final_df['ROA'].median())) * 0.25) + (calc_zscore(final_df['Margin'].fillna(final_df['Margin'].median())) * 0.25)
-        
-        final_df['Sharpe'] = final_df['Ticker'].map(sharpe_ratio)
-        final_df['Sortino'] = final_df['Ticker'].map(sortino_ratio)
         final_df['Max_Drawdown'] = final_df['Ticker'].map(max_dd)
         
         final_df = final_df.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
@@ -192,16 +223,82 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
         port_df['Sector'] = port_df['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
         
         total_port_value = port_df['Current'].sum()
-        
-        # Risk Parity เป็น Core Logic
-        port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
-        port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
+        port_df['Weight_%'] = (port_df['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
+
+        # ==========================================
+        # ⚖️ THE ENGINE: BLACK-LITTERMAN MATRIX 
+        # ==========================================
+        if "Auto-Pilot" in engine_choice:
+            status_box.update(label=f"🧮 กำลังแก้สมการอนุพันธ์เพื่อค้นหาจุดดุลยภาพความเสี่ยง...")
+            port_tickers = port_df['Ticker'].tolist()
+            port_returns = returns_1y[port_tickers]
+            num_assets = len(port_tickers)
+            
+            try:
+                downside_port_returns = port_returns.copy()
+                downside_port_returns[downside_port_returns > 0] = 0
+                last_date = downside_port_returns.index[-1]
+                ewma_cov = downside_port_returns.ewm(span=63).cov().loc[last_date].values * 252
+                
+                inv_vol = 1.0 / returns_1y[port_tickers].std()
+                w_eq = (inv_vol / inv_vol.sum()).values
+                Pi = dynamic_lambda * np.dot(ewma_cov, w_eq) 
+                
+                tau = 0.05
+                Q = np.zeros(num_assets)
+                P = np.eye(num_assets) 
+                omega_diag = np.zeros(num_assets)
+                
+                sniper_targets = []
+                for i, t in enumerate(port_tickers):
+                    series = prices_1y[t].dropna()
+                    if len(series) >= 20:
+                        lower_band = series.rolling(20).mean().iloc[-1] - (2 * series.rolling(20).std().iloc[-1])
+                        if series.iloc[-1] <= lower_band or rsi_data.get(t, 50.0) <= 40: 
+                            sniper_targets.append(t)
+                            Q[i] = Pi[i] + 0.20 
+                            omega_diag[i] = ewma_cov[i, i] * tau * 0.1 
+                            continue
+                    Q[i] = Pi[i] 
+                    omega_diag[i] = ewma_cov[i, i] * tau * 100 
+
+                if sniper_targets: sniper_msg = f"🎯 **Sniper Alert:** พบหุ้นดิ่งแตะแนวรับ {', '.join(sniper_targets)} สั่งปรับน้ำหนักเพื่อเข้าช้อนซื้อ!"
+
+                Omega = np.diag(omega_diag)
+                tau_cov_inv = np.linalg.inv(tau * ewma_cov)
+                omega_inv = np.linalg.inv(Omega)
+                
+                term1 = np.linalg.inv(tau_cov_inv + np.dot(np.dot(P.T, omega_inv), P))
+                term2 = np.dot(tau_cov_inv, Pi) + np.dot(np.dot(P.T, omega_inv), Q)
+                mu_bl = np.dot(term1, term2) 
+
+                current_weights_arr = (port_df['Current'] / total_port_value).fillna(0).values if total_port_value > 0 else np.zeros(num_assets)
+                
+                def neg_utility(w):
+                    expected_return = np.sum(mu_bl * w)
+                    portfolio_variance = np.dot(w.T, np.dot(ewma_cov, w)) 
+                    return -(expected_return - (dynamic_lambda / 2.0) * portfolio_variance - (0.5 * np.sum(w**2)) - (0.02 * np.sum(np.abs(w - current_weights_arr))))
+                    
+                constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+                bounds = tuple((0.0, 1.0) for _ in range(num_assets))
+                opt_result = minimize(neg_utility, num_assets * [1./num_assets], method='SLSQP', bounds=bounds, constraints=constraints, options={'maxiter': 200})
+                
+                if opt_result.success: port_df['Target_%'] = port_df['Ticker'].map(dict(zip(port_tickers, opt_result.x))) * 100.0
+                else: raise ValueError("Matrix Non-Convergence")
+                    
+            except Exception as e:
+                st.warning(f"⚠️ ตลาดผันผวนเกินขนาด สลับไปใช้กลไก Risk Parity คุมกระดูกพอร์ตอัตโนมัติ! ({e})")
+                port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
+                port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
+
+        else: 
+            status_box.update(label=f"🛡️ ดำเนินงานจัดสัดส่วนแบบกระจายความเสี่ยงขั้นสูงสุด (Risk Parity)...")
+            port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
+            port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
         sector_totals = port_df.groupby('Sector')['Current'].sum().reset_index()
         overweight_sectors = []
-        
-        # 🛡️ อัปเกรด V.50.15: เพดานแปรผันตาม VIX
-        max_sector_cap = 50 if is_panic else (55 if is_market_crashing else 70)
+        max_sector_cap = 50 if is_panic else (55 if is_market_crashing else 70) 
         
         for _, row in sector_totals.iterrows():
             sec_weight = (row['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
@@ -211,18 +308,18 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
             port_df.loc[port_df['Sector'].isin(overweight_sectors), 'Target_%'] = 0.0
             if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
 
-        # FOMO Breaker
+        # FOMO CIRCUIT BREAKER
         fomo_list = [t for t in port_df['Ticker'] if rsi_data.get(t, 50) > 75] 
         if fomo_list:
             port_df.loc[port_df['Ticker'].isin(fomo_list), 'Target_%'] = 0.0
             if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
-            st.warning(f"🛑 **Anti-FOMO:** ระงับซื้อ {', '.join(fomo_list)} กราฟตึงเกินไป")
+            fomo_msg = f"🛑 **Anti-FOMO Active:** สั่งระงับงบซื้อเพิ่มใน {', '.join(fomo_list)} (เป้า 0%) เพราะราคาตึงเสี่ยงติดดอย!"
 
-        # จัดสรรเงิน
         target_total = total_port_value + actual_budget
         port_df['Target_Val'] = target_total * (port_df['Target_%'] / 100)
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current'] 
         port_df['Buy_Amount'] = 0.0
+        port_df['Sell_Amount'] = 0.0
         
         buy_mask = port_df['Deficit'] > min_order_thb
         sum_deficit = port_df.loc[buy_mask, 'Deficit'].sum()
@@ -230,26 +327,102 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
             port_df.loc[buy_mask, 'Buy_Amount'] = (port_df.loc[buy_mask, 'Deficit'] / sum_deficit) * actual_budget
             port_df['Buy_Amount'] = port_df['Buy_Amount'].apply(lambda x: round(x, 2) if x >= min_order_thb else 0.0)
         
+        sell_mask = (port_df['Deficit'] < -min_order_thb) & (port_df['Weight_%'] > max_sector_cap/2)
+        port_df.loc[sell_mask, 'Sell_Amount'] = port_df.loc[sell_mask, 'Deficit'].abs().round(2)
+        
         cash_reserve = actual_budget - port_df['Buy_Amount'].sum()
-        status_box.update(label="--- คำนวณเสร็จสิ้น! ---", state="complete")
+        status_box.update(label="--- คำนวณสมการโครงสร้างเสร็จสิ้นแล้ว! ---", state="complete")
         
-        # 🎨 แสดงผลตาราง The Final Auto-Pilot
-        st.markdown(f"### 📋 ใบสั่งซื้อ & แดชบอร์ดความเสี่ยง (Thesis Layer)")
+        # ==========================================
+        # 🎨 การแสดงผลหน้าจอ
+        # ==========================================
+        st.markdown("### 🍩 2. โครงสร้างความเสี่ยง (Guardrails & Correlation)")
+        valid_port_tickers = [t for t in my_portfolio if t in prices_1y.columns]
+        corr_matrix = returns_1y[valid_port_tickers].corr().round(2)
         
-        out = port_df.copy().rename(columns={'Ticker': 'หุ้น', 'Current': 'ทุนเดิม', 'Buy_Amount': 'สั่งซื้อ(บาท)'})
-        out['MDD (หลุมยุบ)'] = out['Max_Drawdown'].apply(lambda x: f"{x:.1f}%")
-        out['RSI'] = out['หุ้น'].map(rsi_data).apply(check_doi_risk)
-        out['Thesis (ตรรกะลงทุน)'] = out['หุ้น'].map(lambda x: THESIS_DB.get(x, "Quantitative Alpha"))
+        c1, c2 = st.columns([1, 1.2])
+        with c1:
+            fig_pie = px.pie(sector_totals, values='Current', names='Sector', hole=0.4, color_discrete_sequence=px.colors.sequential.Plasma)
+            fig_pie.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=280)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with c2:
+            fig_corr = px.imshow(corr_matrix, text_auto=True, color_continuous_scale='RdBu_r', aspect='auto', zmin=-1, zmax=1)
+            fig_corr.update_layout(margin=dict(t=30, b=10, l=10, r=10), height=280, title="เรดาร์ความสัมพันธ์ (Correlation Matrix)")
+            st.plotly_chart(fig_corr, use_container_width=True)
+                
+        out = port_df.copy().rename(columns={'Ticker': 'หุ้น', 'Target_%': 'เป้า%', 'Current': 'ทุนเดิม', 'Buy_Amount': 'ซื้อ'})
+        out['Thesis'] = out['หุ้น'].map(lambda x: THESIS_DB.get(x, "Quant Alpha"))
+        out['MDD'] = out['Max_Drawdown'].apply(lambda x: f"{x:.1f}%")
+        out['RSI'] = out['หุ้น'].map(rsi_data).apply(check_doi_risk).str.replace('ดอย (ซื้อระวัง)', 'ระวังดอย')
+        out['รับ/ต้าน'] = out['หุ้น'].map(sr_data)
+        out['ขาย'] = out['Sell_Amount'].fillna(0.0)
+        for c in ['เป้า%', 'ทุนเดิม']: out[c] = out[c].round(2)
+            
+        st.markdown(f"### 📋 3. ตารางใบสั่งซื้ออัจฉริยะ (The Final Auto-Pilot)")
+        if lambda_msg != "": st.info(lambda_msg) 
+        if fomo_msg != "": st.error(fomo_msg)
+        if sniper_msg != "": st.success(sniper_msg)
+            
+        display_cols = ['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']
+        st.dataframe(out[display_cols].sort_values(by='ซื้อ', ascending=False), use_container_width=True, hide_index=True)
         
-        st.dataframe(out[['หุ้น', 'Thesis (ตรรกะลงทุน)', 'MDD (หลุมยุบ)', 'RSI', 'ทุนเดิม', 'สั่งซื้อ(บาท)']].sort_values('สั่งซื้อ(บาท)', ascending=False), use_container_width=True, hide_index=True)
-        
-        st.code(f"💰 พักเงินสด = {cash_reserve:.2f} บ.", language="text")
-        
-        # 🏆 เรดาร์ (เพิ่ม MDD)
         st.markdown("---")
-        st.subheader("🏆 📡 [RADAR] TOP 20 ALPHA (รวม Max Drawdown)")
-        top20_df = final_df.head(20).copy()
-        top20_df['MDD'] = top20_df['Max_Drawdown'].round(1).astype(str) + "%"
-        display_top20 = top20_df[['Rank', 'Ticker', 'Alpha_Score', 'Sharpe', 'Sortino', 'MDD']].rename(
-            columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha', 'MDD': 'Max Drawdown (ดิ่งลึกสุด)'})
-        st.dataframe(display_top20, use_container_width=True, hide_index=True)
+        c_buy, c_sell = st.columns(2)
+        buy_list = out[out['ซื้อ'] > 0].sort_values(by='ซื้อ', ascending=False)
+        sell_list = out[out['ขาย'] > 0].sort_values(by='ขาย', ascending=False)
+        
+        with c_buy:
+            st.markdown("### 🛒 โพยสั่งซื้อ (Dime!)")
+            text_buy = f"📅 งบซื้อรอบนี้ ({actual_budget:,.0f} บ.)\n----------------\n"
+            for _, row in buy_list.iterrows(): text_buy += f"🔹 {row['หุ้น']} = ซื้อ {row['ซื้อ']} บ.\n"
+            if cash_reserve > 0: text_buy += f"💰 พักเงินสด = {cash_reserve:.2f} บ.\n"
+            st.code(text_buy, language="text")
+            
+        with c_sell:
+            st.markdown("### 💰 โพยรินขาย (Rebalance)")
+            text_sell = f"📅 คำสั่งขายปรับสมดุลพอร์ต\n----------------\n"
+            if sell_list.empty: text_sell += "✅ ไม่มีหุ้นที่ล้นพอร์ตจนเกิดเกณฑ์คุมความเสี่ยง\n"
+            else:
+                for _, row in sell_list.iterrows(): text_sell += f"🔻 {row['หุ้น']} = ขาย {row['ขาย']} บ.\n"
+            st.code(text_sell, language="text")
+
+        # ==========================================
+        # 🤖 THE AI TRADE REVIEWER (ฟีเจอร์ใหม่ V.50.18)
+        # ==========================================
+        st.markdown("---")
+        st.markdown("### 🤖 ให้ AI ตรวจทานความเสี่ยงก่อนโอนเงิน")
+        
+        if st.button("🔍 ตรวจประเมินโพยสั่งซื้อด้วย AI", type="secondary"):
+            api_key = st.secrets.get("GEMINI_API_KEY")
+            if not api_key:
+                st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings -> Secrets")
+            else:
+                with st.spinner("AI กำลังวิเคราะห์สัดส่วนและความเสี่ยง..."):
+                    try:
+                        import google.generativeai as genai
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel('gemini-3.1-flash-lite')
+                        
+                        # สร้างประโยคสรุปโพยส่งให้ AI
+                        buy_str = "\n".join([f"- {row['หุ้น']}: {row['ซื้อ']} บาท ({row['Thesis']})" for _, row in buy_list.iterrows()])
+                        if not buy_str: buy_str = "- ไม่มีคำสั่งซื้อในรอบนี้ (สะสมเงินสด)"
+                        
+                        prompt = f"""
+                        ในฐานะ Risk Manager สาย Quant สถาบัน 
+                        โปรดตรวจสอบโพยคำสั่งซื้อ DCA ประจำงวดนี้ ด้วยงบ {actual_budget} บาท 
+                        สภาวะตลาดปัจจุบัน: ดัชนีความกลัว VIX = {vix_current:.1f}
+                        
+                        รายการสั่งซื้อที่ระบบคณิตศาสตร์คำนวณมา:
+                        {buy_str}
+                        
+                        วิเคราะห์สั้นๆ กระชับที่สุด เป็น Bullet (ห้ามเกริ่นนำ):
+                        1. ⚖️ สมดุลพอร์ต (Balance): เงินถูกเทไปกระจุกที่กลุ่มไหนมากเกินไปไหม?
+                        2. 🛡️ จุดอ่อนแฝง (Hidden Risk): มีความเสี่ยงระดับมหภาค (Macro) อะไรที่อาจกระทบตะกร้าหุ้นชุดนี้?
+                        3. 🏁 คำตัดสิน (Verdict): "อนุมัติให้ซื้อตามนี้" หรือ "ควรพักเงินสดรอดูสถานการณ์ก่อน" (ฟันธงมาเลย!)
+                        """
+                        
+                        response = model.generate_content(prompt)
+                        st.info(response.text)
+                        
+                    except Exception as e:
+                        st.error(f"❌ ระบบ AI ขัดข้อง: {e}")
