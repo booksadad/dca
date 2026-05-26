@@ -4,9 +4,10 @@ import pandas as pd
 import numpy as np
 import warnings
 import os, sys
+import json
 import plotly.express as px
 from scipy.optimize import minimize
-from scipy.signal import argrelextrema 
+from scipy.signal import argrelextrema
 
 warnings.filterwarnings("ignore")
 
@@ -72,15 +73,14 @@ THESIS_DB = {
 
 if 'dca_budget' not in st.session_state: st.session_state['dca_budget'] = 500.0 
 if 'min_order_thb' not in st.session_state: st.session_state['min_order_thb'] = 50.0
-if 'system_run' not in st.session_state: st.session_state['system_run'] = False
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
-st.title("🛡️ QUANT-HQ DCA (V.Ultimate 5-Agent Board)")
-st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(สมการคณิตศาสตร์ ผสาน บอร์ดบริหาร 5 อรหันต์)**")
+st.title("🛡️ QUANT-HQ DCA (V.Institutional Engine)")
+st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(Quant Math + AI JSON Agent + Hard Constraints)**")
 st.markdown("---")
 
 # ==========================================
-# 🗂️ แถบด้านซ้าย (Sidebar) 
+# 🗂️ แถบด้านซ้าย (Sidebar)
 # ==========================================
 default_tickers = "MSFT, AVGO, COST, NVDA, V, KO, JNJ, RKLB"
 if os.path.exists(PORTFOLIO_FILE):
@@ -134,18 +134,14 @@ st.session_state['portfolio_holdings'] = df_holdings_edited
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
 current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
-sniper_msg, bl_msg, lambda_msg, fomo_msg = "", "", "", ""
+sniper_msg, lambda_msg, fomo_msg = "", "", ""
 actual_budget = budget 
 
-if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
-    st.session_state['system_run'] = True
-
-if st.session_state['system_run']:
+if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     if not my_portfolio: 
         st.error("⚠️ โปรดระบุชื่อหุ้นก่อนครับ")
-        st.session_state['system_run'] = False
     else:
-        status_box = st.status(f"🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=False)
+        status_box = st.status(f"🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=True)
         
         benchmark = 'VOO'
         vix_ticker = '^VIX'
@@ -160,12 +156,12 @@ if st.session_state['system_run']:
         
         is_panic = False
         if vix_current > 25:
-            st.error(f"🚨 **Market Regime: PANIC (VIX = {vix_current:.1f})** ตลาดเกิดความกลัวรุนแรง! ดึงเกราะความเสี่ยงขึ้น")
+            st.error(f"🚨 **Market Regime: PANIC (VIX = {vix_current:.1f})** ตลาดเกิดความกลัวรุนแรง!")
             is_panic = True
         elif vix_current < 15:
-            st.success(f"🐂 **Market Regime: BULL (VIX = {vix_current:.1f})** ตลาดกระทิงนิ่งสงบ! ขยายเพดานสายบุกสุดตัว")
+            st.success(f"🐂 **Market Regime: BULL (VIX = {vix_current:.1f})** ตลาดกระทิงนิ่งสงบ!")
         else:
-            st.info(f"⚖️ **Market Regime: NORMAL (VIX = {vix_current:.1f})** ตลาดทำงานในสภาวะปกติ")
+            st.info(f"⚖️ **Market Regime: NORMAL (VIX = {vix_current:.1f})** ตลาดอยู่ในสภาวะปกติ")
 
         voo_ret = market_data[benchmark].pct_change().dropna()
         vol_30d = voo_ret.tail(30).std() * np.sqrt(252)
@@ -199,13 +195,14 @@ if st.session_state['system_run']:
         
         quality_data, rsi_data, sr_data = [], {}, {}
         for t in df['Ticker'].tolist():
-            roa, margin = None, None
             try:
                 block_print()
                 info = yf.Ticker(t).info
                 enable_print()
                 roa, margin = info.get('returnOnAssets'), info.get('profitMargins')
-            except: enable_print()
+            except: 
+                enable_print()
+                roa, margin = None, None
             quality_data.append({'Ticker': t, 'ROA': roa * 100 if roa is not None else np.nan, 'Margin': margin * 100 if margin is not None else np.nan})
             series_clean = prices_1y[t].dropna()
             rsi_data[t] = calculate_rsi(series_clean).iloc[-1] if len(series_clean) > 14 else 50.0
@@ -225,10 +222,10 @@ if st.session_state['system_run']:
         port_df['Weight_%'] = (port_df['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
 
         # ==========================================
-        # ⚖️ THE ENGINE: BLACK-LITTERMAN MATRIX 
+        # ⚖️ THE QUANT ENGINE (PYTHON LAYER)
         # ==========================================
         if "Auto-Pilot" in engine_choice:
-            status_box.update(label=f"🧮 กำลังแก้สมการอนุพันธ์เพื่อค้นหาจุดดุลยภาพความเสี่ยง...")
+            status_box.update(label=f"🧮 กำลังแก้สมการอนุพันธ์ (Black-Litterman)...")
             port_tickers = port_df['Ticker'].tolist()
             port_returns = returns_1y[port_tickers]
             num_assets = len(port_tickers)
@@ -248,20 +245,16 @@ if st.session_state['system_run']:
                 P = np.eye(num_assets) 
                 omega_diag = np.zeros(num_assets)
                 
-                sniper_targets = []
                 for i, t in enumerate(port_tickers):
                     series = prices_1y[t].dropna()
                     if len(series) >= 20:
                         lower_band = series.rolling(20).mean().iloc[-1] - (2 * series.rolling(20).std().iloc[-1])
                         if series.iloc[-1] <= lower_band or rsi_data.get(t, 50.0) <= 40: 
-                            sniper_targets.append(t)
                             Q[i] = Pi[i] + 0.20 
                             omega_diag[i] = ewma_cov[i, i] * tau * 0.1 
                             continue
                     Q[i] = Pi[i] 
                     omega_diag[i] = ewma_cov[i, i] * tau * 100 
-
-                if sniper_targets: sniper_msg = f"🎯 **Sniper Alert:** พบหุ้นดิ่งแตะแนวรับ {', '.join(sniper_targets)} สั่งปรับน้ำหนักเพื่อเข้าช้อนซื้อ!"
 
                 Omega = np.diag(omega_diag)
                 tau_cov_inv = np.linalg.inv(tau * ewma_cov)
@@ -286,7 +279,6 @@ if st.session_state['system_run']:
                 else: raise ValueError("Matrix Non-Convergence")
                     
             except Exception as e:
-                st.warning(f"⚠️ ตลาดผันผวนเกินขนาด สลับไปใช้กลไก Risk Parity คุมกระดูกพอร์ตอัตโนมัติ! ({e})")
                 port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
                 port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
@@ -294,9 +286,10 @@ if st.session_state['system_run']:
             port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
             port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
+        # Hard Constraints (Python Layer)
         sector_totals = port_df.groupby('Sector')['Current'].sum().reset_index()
         overweight_sectors = []
-        max_sector_cap = 50 if is_panic else (55 if is_market_crashing else 70) 
+        max_sector_cap = 50 if is_panic else 70 
         
         for _, row in sector_totals.iterrows():
             sec_weight = (row['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
@@ -306,13 +299,13 @@ if st.session_state['system_run']:
             port_df.loc[port_df['Sector'].isin(overweight_sectors), 'Target_%'] = 0.0
             if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
 
-        # FOMO CIRCUIT BREAKER
+        # Circuit Breaker
         fomo_list = [t for t in port_df['Ticker'] if rsi_data.get(t, 50) > 75] 
         if fomo_list:
             port_df.loc[port_df['Ticker'].isin(fomo_list), 'Target_%'] = 0.0
             if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
-            fomo_msg = f"🛑 **Anti-FOMO Active:** สั่งระงับงบซื้อเพิ่มใน {', '.join(fomo_list)} (เป้า 0%) เพราะราคาตึงเสี่ยงติดดอย!"
 
+        # Execution Budget Math (Python handles min_order logic)
         target_total = total_port_value + actual_budget
         port_df['Target_Val'] = target_total * (port_df['Target_%'] / 100)
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current'] 
@@ -329,25 +322,11 @@ if st.session_state['system_run']:
         port_df.loc[sell_mask, 'Sell_Amount'] = port_df.loc[sell_mask, 'Deficit'].abs().round(2)
         
         cash_reserve = actual_budget - port_df['Buy_Amount'].sum()
-        status_box.update(label="--- คำนวณสมการโครงสร้างเสร็จสิ้นแล้ว! ---", state="complete")
+        status_box.update(label="--- Quant Engine ประมวลผลเสร็จสิ้น ---", state="complete")
         
         # ==========================================
-        # 🎨 การแสดงผลหน้าจอ
+        # 🎨 การแสดงผลตารางใบสั่งซื้อพื้นฐาน
         # ==========================================
-        st.markdown("### 🍩 2. โครงสร้างความเสี่ยง (Guardrails & Correlation)")
-        valid_port_tickers = [t for t in my_portfolio if t in prices_1y.columns]
-        corr_matrix = returns_1y[valid_port_tickers].corr().round(2)
-        
-        c1, c2 = st.columns([1, 1.2])
-        with c1:
-            fig_pie = px.pie(sector_totals, values='Current', names='Sector', hole=0.4, color_discrete_sequence=px.colors.sequential.Plasma)
-            fig_pie.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=280)
-            st.plotly_chart(fig_pie, use_container_width=True)
-        with c2:
-            fig_corr = px.imshow(corr_matrix, text_auto=True, color_continuous_scale='RdBu_r', aspect='auto', zmin=-1, zmax=1)
-            fig_corr.update_layout(margin=dict(t=30, b=10, l=10, r=10), height=280, title="เรดาร์ความสัมพันธ์ (Correlation Matrix)")
-            st.plotly_chart(fig_corr, use_container_width=True)
-                
         out = port_df.copy().rename(columns={'Ticker': 'หุ้น', 'Target_%': 'เป้า%', 'Current': 'ทุนเดิม', 'Buy_Amount': 'ซื้อ'})
         out['Thesis'] = out['หุ้น'].map(lambda x: THESIS_DB.get(x, "Quant Alpha"))
         out['MDD'] = out['Max_Drawdown'].apply(lambda x: f"{x:.1f}%")
@@ -356,165 +335,136 @@ if st.session_state['system_run']:
         out['ขาย'] = out['Sell_Amount'].fillna(0.0)
         for c in ['เป้า%', 'ทุนเดิม']: out[c] = out[c].round(2)
             
-        st.markdown(f"### 📋 3. ตารางใบสั่งซื้ออัจฉริยะ (The Final Auto-Pilot)")
-        if lambda_msg != "": st.info(lambda_msg) 
-        if fomo_msg != "": st.error(fomo_msg)
-        if sniper_msg != "": st.success(sniper_msg)
-            
+        st.markdown(f"### 📋 2. ตาราง Quant Allocation")
         display_cols = ['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']
         st.dataframe(out[display_cols].sort_values(by='ซื้อ', ascending=False), use_container_width=True, hide_index=True)
         
-        st.markdown("---")
-        c_buy, c_sell = st.columns(2)
         buy_list = out[out['ซื้อ'] > 0].sort_values(by='ซื้อ', ascending=False)
-        sell_list = out[out['ขาย'] > 0].sort_values(by='ขาย', ascending=False)
-        
-        with c_buy:
-            st.markdown("### 🛒 โพยสั่งซื้อ (Dime!)")
-            text_buy = f"📅 งบซื้อรอบนี้ ({actual_budget:,.0f} บ.)\n----------------\n"
-            for _, row in buy_list.iterrows(): text_buy += f"🔹 {row['หุ้น']} = ซื้อ {row['ซื้อ']} บ.\n"
-            if cash_reserve > 0: text_buy += f"💰 พักเงินสด = {cash_reserve:.2f} บ.\n"
-            st.code(text_buy, language="text")
-            
-        with c_sell:
-            st.markdown("### 💰 โพยรินขาย (Rebalance)")
-            text_sell = f"📅 คำสั่งขายปรับสมดุลพอร์ต\n----------------\n"
-            if sell_list.empty: text_sell += "✅ ไม่มีหุ้นที่ล้นพอร์ตจนเกิดเกณฑ์คุมความเสี่ยง\n"
-            else:
-                for _, row in sell_list.iterrows(): text_sell += f"🔻 {row['หุ้น']} = ขาย {row['ขาย']} บ.\n"
-            st.code(text_sell, language="text")
+        proposed_buys_json = buy_list[['หุ้น', 'ซื้อ', 'Thesis']].to_dict('records')
 
-       # ==========================================
-        # 🤖 THE 0.01% QUANT BOARD (God Mode Architecture)
+        # ==========================================
+        # 🤖 AI INSTITUTIONAL DECISION ENGINE (JSON OUTPUT)
         # ==========================================
         st.markdown("---")
-        st.markdown("### 🏛️ บอร์ดบริหารกองทุน (The 0.01% Quant Board)")
+        st.markdown("### 🏛️ ระบบตรวจสอบโดย AI (Institutional Decision Engine)")
         
-        if st.button("⚖️ เรียกประชุมบอร์ดบริหารเพื่อสแกนกลยุทธ์", type="primary"):
+        if st.button("🧠 รันระบบตรวจสอบ (Run AI Validation)", type="primary"):
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
-                st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings -> Secrets")
+                st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY")
             else:
                 try:
                     import google.generativeai as genai
                     genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel('gemini-3.1-flash-lite')
+                    # 🛠️ บังคับให้ AI ตอบกลับเป็น JSON เท่านั้น
+                    model = genai.GenerativeModel(
+                        'gemini-3.1-flash-lite',
+                        generation_config={"response_mime_type": "application/json"}
+                    )
                     
-                    # 📊 1. เตรียมข้อมูลโพยสั่งซื้อ
-                    buy_txt = "\n".join([f"- {row['หุ้น']}: ซื้อ {row['ซื้อ']} บาท" for _, row in buy_list.iterrows()])
-                    if not buy_txt: buy_txt = "- ไม่มีคำสั่งซื้อในรอบนี้ (ระบบสั่งพักกระสุน)"
-                    current_port_str = ", ".join([f"{row['หุ้น']} ({row['ทุนเดิม']} บ.)" for _, row in out.iterrows() if row['ทุนเดิม'] > 0])
-                    if not current_port_str: current_port_str = "พอร์ตว่างเปล่า"
+                    # 📊 เตรียม Portfolio State แบบ Data-driven
+                    sector_exposure = [{"Sector": row['Sector'], "Weight_%": round((row['Current']/total_port_value)*100, 1) if total_port_value > 0 else 0} for _, row in sector_totals.iterrows()]
+                    top_alpha = [{"Ticker": row['Ticker'], "Alpha_Score": round(row['Alpha_Score'], 2)} for _, row in final_df.head(5).iterrows()]
                     
-                    # 📊 2. เตรียมข้อมูล Sector ให้ CRO (แก้จุดอ่อนตาบอดสัดส่วน)
-                    sector_str = ", ".join([f"{row['Sector']}: {(row['Current']/total_port_value)*100:.1f}%" if total_port_value > 0 else f"{row['Sector']}: 0%" for _, row in sector_totals.iterrows()])
-                    
-                    # 📊 3. เตรียมข้อมูล Alpha พร้อมคะแนนให้ PM (แก้จุดอ่อนจ่าฝูงไร้เหตุผล)
-                    top_alpha_details = ", ".join([f"{row['Ticker']} (Alpha Score: {row['Alpha_Score']:.2f})" for _, row in final_df.head(5).iterrows()])
-                    try:
-                        alpha_df = pd.read_csv("alpha_radar.csv")
-                        top_alpha_str = ", ".join(alpha_df['Alpha_Tickers'].tolist()) # ชื่อจากหน้า Scanner
-                    except:
-                        top_alpha_str = top_alpha_details # ถ้าหาไม่เจอให้ใช้จากสมการในหน้านี้
+                    port_state = {
+                        "vix_level": round(vix_current, 1),
+                        "market_regime": "PANIC" if is_panic else "NORMAL",
+                        "proposed_buys": proposed_buys_json,
+                        "current_sector_exposure": sector_exposure,
+                        "top_alpha_candidates": top_alpha,
+                        "hard_constraints": "Sector Limit = 50%"
+                    }
+                    port_state_str = json.dumps(port_state, indent=2)
 
                     board_container = st.container()
                     with board_container:
-                        st.markdown("#### 📝 บันทึกการประชุมบอร์ดสถาบัน (Meeting Minutes)")
+                        st.markdown("#### 📡 ข้อมูลดิบจาก Agent (JSON Structured Output)")
+                        col1, col2, col3 = st.columns(3)
                         
                         # -----------------------------------------
-                        # 🚀 1. The Alpha PM (หน่วยบุกทะลวง)
+                        # 🚀 1. Alpha PM (ประเมินโมเมนตัม)
                         # -----------------------------------------
-                        with st.spinner("🚀 PM กำลังคำนวณเป้าหมายบุก..."):
-                            prompt_pm = f"""
-                            คุณคือ 🚀 'The Alpha PM' ผู้จัดการกองทุนสายบุก (Aggressive Growth) 
-                            Context: VIX={vix_current:.1f}, พอร์ตเดิม={current_port_str}
-                            จ่าฝูง Alpha พร้อมคะแนน: {top_alpha_details}
-                            โพยตั้งต้นของระบบ: {buy_txt}
-                            งบ: {actual_budget} บาท
-                            
-                            คำสั่ง:
-                            - เสนอแผนบุก! ให้อ้างอิง "Alpha Score" ในการเชียร์หุ้นด้วย เพื่อให้เห็นว่าไม่ได้เชียร์มั่วๆ
-                            - หากโพยตั้งต้นปอดแหก ให้ด่าระบบ แล้วเสนอโยกงบไปเข้า 'จ่าฝูง Alpha' ที่คะแนนสูงที่สุด 
-                            - ❌ ห้ามคิดเลขเงินเอง ให้บอกทิศทางสั้นๆ 2 บรรทัด ดุดัน ขวานผ่าซาก
-                            """
-                            pm_plan = model.generate_content(prompt_pm).text
-                            st.success(f"**🚀 1. The Alpha PM:**\n{pm_plan}")
+                        with col1:
+                            with st.spinner("PM Agent..."):
+                                prompt_pm = f"""
+                                Role: Portfolio Manager
+                                Objective: Maximize alpha. Evaluate if 'proposed_buys' align with 'top_alpha_candidates'.
+                                Portfolio State: {port_state_str}
+                                Return ONLY a valid JSON object matching this schema:
+                                {{
+                                  "decision": "APPROVE" or "REJECT",
+                                  "confidence": float (0.0 to 1.0),
+                                  "reason": "short explanation"
+                                }}
+                                """
+                                res_pm = model.generate_content(prompt_pm).text
+                                pm_data = json.loads(res_pm)
+                                st.json(pm_data)
 
                         # -----------------------------------------
-                        # 🌐 2. The Macro-Quant Architect (สถาปนิกกลยุทธ์มหภาค)
+                        # 🌐 2. Macro Strategist (ประเมินสภาวะตลาด)
                         # -----------------------------------------
-                        with st.spinner("🌐 Architect กำลังสแกนความสัมพันธ์มหภาค..."):
-                            prompt_architect = f"""
-                            คุณคือ 🌐 'Macro-Quant Architect' อัจฉริยะภาพใหญ่ ไร้อารมณ์
-                            Context: VIX={vix_current:.1f}
-                            แผนบุกของ PM: {pm_plan}
-                            
-                            คำสั่ง:
-                            - ประเมินแผน PM ด้วยสถิติ VIX 
-                            - ถ้า VIX < 20 ให้ไฟเขียวสาย High-Beta ถ้า VIX > 25 ให้สกัดแผนบุกว่าเป็นกับดัก
-                            - ❌ ตอบเฉพาะความเสี่ยงเชิงสถิติภาพใหญ่ 2 บรรทัด
-                            """
-                            architect_view = model.generate_content(prompt_architect).text
-                            st.info(f"**🌐 2. The Macro Architect:**\n{architect_view}")
+                        with col2:
+                            with st.spinner("Macro Agent..."):
+                                prompt_macro = f"""
+                                Role: Macro Strategist
+                                Objective: Assess market regime based on VIX.
+                                Portfolio State: {port_state_str}
+                                Return ONLY a valid JSON object matching this schema:
+                                {{
+                                  "regime_support": "FAVORABLE" or "UNFAVORABLE",
+                                  "confidence": float (0.0 to 1.0),
+                                  "reason": "short explanation"
+                                }}
+                                """
+                                res_macro = model.generate_content(prompt_macro).text
+                                macro_data = json.loads(res_macro)
+                                st.json(macro_data)
 
                         # -----------------------------------------
-                        # 🛡️ 3. The Ruthless CRO (ผู้คุมกฎความเสี่ยงขั้นเด็ดขาด)
+                        # 🛡️ 3. CRO (ประเมินความเสี่ยงและสัดส่วน)
                         # -----------------------------------------
-                        with st.spinner("🛡️ CRO กำลังคำนวณสัดส่วนกลุ่มอุตสาหกรรม..."):
-                            prompt_cro = f"""
-                            คุณคือ 🛡️ 'Ruthless CRO' ยมบาลคุมความเสี่ยงพอร์ต
-                            🚨 สัดส่วนอุตสาหกรรมพอร์ตปัจจุบัน (Sector Weights): {sector_str}
-                            แผนของ PM: {pm_plan} | ความเห็น Architect: {architect_view}
-                            
-                            คำสั่ง:
-                            - หาจุดตายเชิงโครงสร้างจาก "สัดส่วน Sector" จริงๆ ที่ให้ไป! 
-                            - หากแผน PM สั่งอัดหุ้นกลุ่มที่พอร์ตเรามีสัดส่วน % สูงเกินไปแล้ว ให้สั่ง 'แบน' (Kill Switch) ทันที
-                            - ❌ คุณมีสิทธิ์แค่สั่งฆ่า ห้ามเสนอหุ้นตัวใหม่เข้าพอร์ต ตอบดุดัน 2 บรรทัด
-                            """
-                            cro_view = model.generate_content(prompt_cro).text
-                            st.warning(f"**🛡️ 3. The Ruthless CRO:**\n{cro_view}")
+                        with col3:
+                            with st.spinner("CRO Agent..."):
+                                prompt_cro = f"""
+                                Role: Chief Risk Officer
+                                Objective: Identify concentration risk. If ANY sector in 'current_sector_exposure' exceeds 50%, or if 'proposed_buys' worsens a high exposure, you MUST BLOCK.
+                                Portfolio State: {port_state_str}
+                                Return ONLY a valid JSON object matching this schema:
+                                {{
+                                  "decision": "PASS" or "BLOCK",
+                                  "confidence": float (0.0 to 1.0),
+                                  "flagged_risk": "string (or null if none)",
+                                  "reason": "short explanation"
+                                }}
+                                """
+                                res_cro = model.generate_content(prompt_cro).text
+                                cro_data = json.loads(res_cro)
+                                st.json(cro_data)
 
                         # -----------------------------------------
-                        # ⚙️ 4. The Micro-Execution Engineer (วิศวกรโครงสร้างคำสั่งซื้อ)
+                        # ⚖️ 4. Python Scoring Engine (CIO อัตโนมัติ)
                         # -----------------------------------------
-                        with st.spinner("⚙️ Engineer กำลังบริหารต้นทุนหน้าตัก..."):
-                            prompt_engineer = f"""
-                            คุณคือ ⚙️ 'Execution Engineer' วิศวกรคุมต้นทุนจอมงก
-                            งบรวม={actual_budget} บาท (ซื้อขั้นต่ำ 50 บาท/หุ้น)
-                            แผนบุก: ({pm_plan}) | ข้อห้าม CRO: ({cro_view})
-                            
-                            คำสั่ง:
-                            - ควบคุมความสูญเปล่า! ถ้างบ 500 ถูกกระจายหลายตัวเกินไป ให้สั่งรวบอัด 1-2 ตัว
-                            - 🛡️ กฎเหล็กเอาตัวรอด: ถ้า CRO สั่งแบนหุ้นจนหมด หรือตลาดดูแย่มาก คุณสามารถเสนอให้ "ถือเงินสด (Cash is King)" เพื่อเก็บกระสุนไว้รอบหน้าได้
-                            - ❌ ห้ามเลือกหุ้นใหม่เอง จัดการตัวเลขจากสิ่งที่รอดมาเท่านั้น ตอบ 2 บรรทัด
-                            """
-                            engineer_view = model.generate_content(prompt_engineer).text
-                            st.error(f"**⚙️ 4. The Execution Engineer:**\n{engineer_view}")
-
-                        # -----------------------------------------
-                        # ⚖️ 5. The Global CIO (กรรมการผู้ชี้ขาด)
-                        # -----------------------------------------
-                        with st.spinner("⚖️ CIO กำลังตบโต๊ะสั่งการคำสั่งสวรรค์..."):
-                            prompt_cio = f"""
-                            คุณคือ ⚖️ 'Global CIO' ประธานผู้ฟันธงเด็ดขาด ไร้อคติ 
-                            
-                            รายงานบอร์ด:
-                            - PM: {pm_plan}
-                            - Architect: {architect_view}
-                            - CRO: {cro_view}
-                            - Engineer: {engineer_view}
-                            
-                            คำสั่ง: 
-                            นำข้อมูลทั้งหมดมาออกคำสั่งปฏิบัติการ โครงสร้างต้องเป๊ะตามนี้ (บังคับใช้รูปแบบนี้ 100%):
-                            
-                            1. 🏁 **มติที่ประชุม (Verdict):** [🟢 EXECUTE / 🟡 OVERRIDE / 🔴 VETO (ถือเงินสด)]
-                            2. 🎯 **เป้าหมาย (Target):** (ระบุชื่อหุ้นที่อนุมัติให้ซื้อ หรือ ระบุว่าถือเงินสด)
-                            3. 💼 **The Action Plan:** สรุปกลยุทธ์ 1 ประโยคเด็ดขาด เพื่อเอาไปกดซื้อจริงในแอป Dime! ด้วยงบ {actual_budget} บาท
-                            """
-                            cio_verdict = model.generate_content(prompt_cio).text
-                            
                         st.markdown("---")
-                        st.success(f"### ⚖️ คำสั่งปฏิบัติการจาก CIO (Final Verdict)\n{cio_verdict}")
+                        st.markdown("#### ⚖️ ระบบประเมินผลชี้ขาด (Python Execution Layer)")
+                        
+                        # คำนวณคะแนนตามน้ำหนัก (Scoring Algorithm)
+                        pm_score = pm_data.get("confidence", 0) if pm_data.get("decision") == "APPROVE" else -pm_data.get("confidence", 0)
+                        macro_score = macro_data.get("confidence", 0) if macro_data.get("regime_support") == "FAVORABLE" else -macro_data.get("confidence", 0)
+                        
+                        total_score = (pm_score * 0.6) + (macro_score * 0.4) # PM น้ำหนัก 60%, Macro 40%
+                        is_vetoed = cro_data.get("decision") == "BLOCK"
+                        
+                        st.info(f"📊 **System Score:** {total_score:.2f} (Threshold: > 0.3) | **CRO Veto:** {is_vetoed}")
+                        
+                        if is_vetoed:
+                            st.error(f"🔴 **FINAL VERDICT: REJECTED (HOLD CASH)**\n\n**Reason:** ถูกระงับโดยระบบคุมความเสี่ยง (CRO Veto) - {cro_data.get('flagged_risk')}\n\n*Action:* ระงับคำสั่งซื้อทั้งหมด เก็บเงินสด {actual_budget} บาท")
+                        elif total_score > 0.3:
+                            st.success(f"🟢 **FINAL VERDICT: APPROVED (EXECUTE)**\n\n**Reason:** คะแนนรวมผ่านเกณฑ์ และโครงสร้างความเสี่ยงปลอดภัย\n\n*Action:* อนุมัติยิงคำสั่งซื้อตามตาราง Quant Allocation ด้านบน")
+                        else:
+                            st.warning(f"🟡 **FINAL VERDICT: REJECTED (LOW CONFIDENCE)**\n\n**Reason:** คะแนนความเชื่อมั่นจากบอร์ดบริหารต่ำเกินไป ({total_score:.2f})\n\n*Action:* ชะลอการลงทุน เก็บเงินสด {actual_budget} บาท")
                             
+                except json.JSONDecodeError:
+                    st.error("❌ ขัดข้อง: AI ไม่ได้ตอบกลับมาเป็น JSON Format ที่ถูกต้อง")
                 except Exception as e:
-                    st.error(f"❌ บอร์ดบริหารเกิดข้อขัดข้องทางเทคนิค: {e}")
+                    st.error(f"❌ ระบบประมวลผลขัดข้อง: {e}")
