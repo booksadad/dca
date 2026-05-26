@@ -8,6 +8,7 @@ import json
 import plotly.express as px
 from scipy.optimize import minimize
 from scipy.signal import argrelextrema
+from sklearn.covariance import LedoitWolf 
 
 warnings.filterwarnings("ignore")
 
@@ -17,6 +18,9 @@ warnings.filterwarnings("ignore")
 def calc_zscore(series): 
     if series.std() == 0: return series - series.mean()
     return (series - series.mean()) / series.std()
+
+def sigmoid(x): 
+    return 1 / (1 + np.exp(-x))
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -50,6 +54,31 @@ def enable_print():
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
 
+@st.cache_data(ttl=3600) # 🌟 Caching yfinance ป้องกันอืดและโดนแบน
+def fetch_fundamental_data(tickers):
+    metrics = []
+    for t in tickers:
+        try:
+            block_print()
+            info = yf.Ticker(t).info
+            enable_print()
+            roa = info.get('returnOnAssets', np.nan)
+            margin = info.get('profitMargins', np.nan)
+            peg = info.get('pegRatio', np.nan)
+            fcf = info.get('freeCashflow', np.nan)
+            mcap = info.get('marketCap', np.nan)
+            fcf_yield = (fcf / mcap) if pd.notna(fcf) and pd.notna(mcap) and mcap > 0 else np.nan
+        except:
+            enable_print()
+            roa, margin, peg, fcf_yield = np.nan, np.nan, np.nan, np.nan
+            
+        metrics.append({
+            'Ticker': t, 'ROA': roa * 100 if pd.notna(roa) else np.nan,
+            'Margin': margin * 100 if pd.notna(margin) else np.nan,
+            'PEG': peg, 'FCF_Yield': fcf_yield * 100 if pd.notna(fcf_yield) else np.nan
+        })
+    return pd.DataFrame(metrics)
+
 # ==========================================
 # 💾 ฐานข้อมูลถอดรหัสและ Thesis Layer 
 # ==========================================
@@ -75,8 +104,8 @@ if 'dca_budget' not in st.session_state: st.session_state['dca_budget'] = 500.0
 if 'min_order_thb' not in st.session_state: st.session_state['min_order_thb'] = 50.0
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
-st.title("🛡️ QUANT-HQ DCA (V.Institutional Engine)")
-st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(Quant Math + AI JSON Agent + Hard Constraints)**")
+st.title("🛡️ QUANT-HQ DCA (V.Institutional Awakening)")
+st.markdown("ระบบจัดพอร์ตระดับสถาบัน **(Ledoit-Wolf, Dynamic Factors, Optimizer Constraints)**")
 st.markdown("---")
 
 # ==========================================
@@ -98,9 +127,6 @@ st.sidebar.markdown("---")
 engine_choice = st.sidebar.radio("เข็มทิศการลงทุน:", ["🧠 Auto-Pilot (BL + Adaptive)", "🛡️ Safe Mode (Risk Parity)"])
 base_lambda = st.sidebar.slider("ระดับความกลัวตั้งต้น", 0.1, 10.0, 2.0, 0.1)
 
-# ==========================================
-# 🖥️ หน้าจอหลัก (Main UI)
-# ==========================================
 col_input1, col_input2 = st.columns(2)
 with col_input1: 
     budget = st.number_input("💵 งบประมาณจัดสรร (บาท)", 100, 50000, int(st.session_state['dca_budget']), 100)
@@ -134,15 +160,8 @@ st.session_state['portfolio_holdings'] = df_holdings_edited
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
 current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
-sniper_msg, lambda_msg, fomo_msg = "", "", ""
-actual_budget = budget 
-
-# 🛠️ แก้ไขบั๊กปุ่มเด้ง: สร้างตัวแปรความจำในระบบ
-if 'run_quant_engine' not in st.session_state:
-    st.session_state['run_quant_engine'] = False
-
-if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
-    st.session_state['run_quant_engine'] = True
+if 'run_quant_engine' not in st.session_state: st.session_state['run_quant_engine'] = False
+if st.button("🚀 รันระบบ Quant Matrix", type="primary"): st.session_state['run_quant_engine'] = True
 
 if st.session_state['run_quant_engine']:
     if not my_portfolio: 
@@ -159,17 +178,27 @@ if st.session_state['run_quant_engine']:
         enable_print()
         
         vix_current = market_data[vix_ticker].iloc[-1] if vix_ticker in market_data else 20.0
-        sma200_voo = market_data[benchmark].rolling(200).mean().iloc[-1]
-        is_market_crashing = market_data[benchmark].iloc[-1] < sma200_voo
         
+        # 🌟 Portfolio Regime Engine 
         is_panic = False
+        turnover_penalty = 0.02 
+        max_sector_cap = 0.40 
+        
         if vix_current > 25:
-            st.error(f"🚨 **Market Regime: PANIC (VIX = {vix_current:.1f})** ตลาดเกิดความกลัวรุนแรง!")
+            st.error(f"🚨 **Regime: PANIC (VIX = {vix_current:.1f})** ลด Momentum, เพิ่มน้ำหนัก Quality, บังคับ Sector < 30%")
             is_panic = True
+            turnover_penalty = 0.05
+            w_mom, w_quality, w_value = 0.2, 0.5, 0.3 
+            max_sector_cap = 0.30
         elif vix_current < 15:
-            st.success(f"🐂 **Market Regime: BULL (VIX = {vix_current:.1f})** ตลาดกระทิงนิ่งสงบ!")
+            st.success(f"🐂 **Regime: BULL (VIX = {vix_current:.1f})** เร่งเครื่อง Momentum, ขยาย Sector Limit เป็น 50%")
+            turnover_penalty = 0.01
+            w_mom, w_quality, w_value = 0.5, 0.3, 0.2 
+            max_sector_cap = 0.50
         else:
-            st.info(f"⚖️ **Market Regime: NORMAL (VIX = {vix_current:.1f})** ตลาดอยู่ในสภาวะปกติ")
+            st.info(f"⚖️ **Regime: NORMAL (VIX = {vix_current:.1f})** ตลาดอยู่ในสภาวะปกติ")
+            w_mom, w_quality, w_value = 0.4, 0.3, 0.3
+            max_sector_cap = 0.40
 
         voo_ret = market_data[benchmark].pct_change().dropna()
         vol_30d = voo_ret.tail(30).std() * np.sqrt(252)
@@ -191,36 +220,41 @@ if st.session_state['run_quant_engine']:
         drawdown = (prices_1y - roll_max) / roll_max
         max_dd = drawdown.min() * 100
         
-        ann_ret = returns_1y.mean() * 252
-        ann_vol = returns_1y.std() * np.sqrt(252)
+        # 🧬 The Real Alpha (Residual Momentum & Cached Fundamentals)
+        df_fundamentals = fetch_fundamental_data(prices_1y.columns.tolist())
+        metrics = []
+        rsi_data, sr_data = {}, {}
         
-        ret_3m = prices_1y.pct_change(periods=63).iloc[-1]
-        ret_6m = prices_1y.pct_change(periods=126).iloc[-1]
-        avg_mom = (ret_3m + ret_6m) / 2
-        vol = prices_1y.pct_change().tail(126).std() * np.sqrt(252)
-        
-        df = pd.DataFrame({'Ticker': prices_1y.columns, 'Raw_Mom': (avg_mom / vol), 'Price': prices_1y.iloc[-1]}).dropna().reset_index(drop=True)
-        
-        quality_data, rsi_data, sr_data = [], {}, {}
-        for t in df['Ticker'].tolist():
+        for t in prices_1y.columns:
             try:
-                block_print()
-                info = yf.Ticker(t).info
-                enable_print()
-                roa, margin = info.get('returnOnAssets'), info.get('profitMargins')
+                cov = np.cov(returns_1y[t], voo_ret)[0][1]
+                var = np.var(voo_ret)
+                beta = cov / var if var > 0 else 1.0
+                
+                ret_6m = prices_1y[t].pct_change(periods=126).iloc[-1]
+                mkt_ret_6m = market_data[benchmark].pct_change(periods=126).iloc[-1]
+                residual_mom = ret_6m - (beta * mkt_ret_6m) 
             except: 
-                enable_print()
-                roa, margin = None, None
-            quality_data.append({'Ticker': t, 'ROA': roa * 100 if roa is not None else np.nan, 'Margin': margin * 100 if margin is not None else np.nan})
+                residual_mom = np.nan
+                
+            metrics.append({'Ticker': t, 'Residual_Mom': residual_mom})
+            
             series_clean = prices_1y[t].dropna()
             rsi_data[t] = calculate_rsi(series_clean).iloc[-1] if len(series_clean) > 14 else 50.0
             sr_data[t] = find_sr_levels(series_clean)
             
-        final_df = pd.merge(df, pd.DataFrame(quality_data), on='Ticker')
-        final_df['Alpha_Score'] = (calc_zscore(final_df['Raw_Mom']) * 0.5) + (calc_zscore(final_df['ROA'].fillna(final_df['ROA'].median())) * 0.25) + (calc_zscore(final_df['Margin'].fillna(final_df['Margin'].median())) * 0.25)
-        final_df['Max_Drawdown'] = final_df['Ticker'].map(max_dd)
+        df_metrics = pd.merge(pd.DataFrame(metrics), df_fundamentals, on='Ticker')
+        for col in ['Residual_Mom', 'ROA', 'Margin', 'PEG', 'FCF_Yield']:
+            df_metrics[col] = df_metrics[col].fillna(df_metrics[col].median())
+            
+        # คำนวณ Alpha Score แบบ Dynamic Factor Weighting
+        z_mom = calc_zscore(df_metrics['Residual_Mom'])
+        z_quality = (calc_zscore(df_metrics['ROA']) + calc_zscore(df_metrics['Margin'])) / 2
+        z_value = (calc_zscore(df_metrics['FCF_Yield']) + (calc_zscore(df_metrics['PEG']) * -1)) / 2
         
-        final_df = final_df.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
+        df_metrics['Alpha_Score'] = (z_mom * w_mom) + (z_quality * w_quality) + (z_value * w_value)
+        df_metrics['Max_Drawdown'] = df_metrics['Ticker'].map(max_dd)
+        final_df = df_metrics.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
         
         port_df = final_df[final_df['Ticker'].isin(my_portfolio)].copy()
         port_df['Current'] = port_df['Ticker'].map(current_thb)
@@ -233,39 +267,39 @@ if st.session_state['run_quant_engine']:
         # ⚖️ THE QUANT ENGINE (PYTHON LAYER)
         # ==========================================
         if "Auto-Pilot" in engine_choice:
-            status_box.update(label=f"🧮 กำลังแก้สมการอนุพันธ์ (Black-Litterman)...")
+            status_box.update(label=f"🧮 กำลังคำนวณ Dynamic Black-Litterman ด้วย Ledoit-Wolf Shrinkage...")
             port_tickers = port_df['Ticker'].tolist()
             port_returns = returns_1y[port_tickers]
             num_assets = len(port_tickers)
             
             try:
-                downside_port_returns = port_returns.copy()
-                downside_port_returns[downside_port_returns > 0] = 0
-                last_date = downside_port_returns.index[-1]
-                ewma_cov = downside_port_returns.ewm(span=63).cov().loc[last_date].values * 252
+                # 🌟 Ledoit-Wolf Covariance Shrinkage 
+                lw = LedoitWolf()
+                lw.fit(port_returns)
+                shrunk_cov = lw.covariance_ * 252 
                 
                 inv_vol = 1.0 / returns_1y[port_tickers].std()
                 w_eq = (inv_vol / inv_vol.sum()).values
-                Pi = dynamic_lambda * np.dot(ewma_cov, w_eq) 
+                Pi = dynamic_lambda * np.dot(shrunk_cov, w_eq) 
                 
                 tau = 0.05
                 Q = np.zeros(num_assets)
-                P = np.eye(num_assets) 
                 omega_diag = np.zeros(num_assets)
+                P = np.eye(num_assets) 
                 
+                # 🧮 Dynamic Views & Sigmoid Conviction
                 for i, t in enumerate(port_tickers):
-                    series = prices_1y[t].dropna()
-                    if len(series) >= 20:
-                        lower_band = series.rolling(20).mean().iloc[-1] - (2 * series.rolling(20).std().iloc[-1])
-                        if series.iloc[-1] <= lower_band or rsi_data.get(t, 50.0) <= 40: 
-                            Q[i] = Pi[i] + 0.20 
-                            omega_diag[i] = ewma_cov[i, i] * tau * 0.1 
-                            continue
-                    Q[i] = Pi[i] 
-                    omega_diag[i] = ewma_cov[i, i] * tau * 100 
+                    alpha_score = port_df.loc[port_df['Ticker'] == t, 'Alpha_Score'].values[0]
+                    
+                    conviction = sigmoid(alpha_score) 
+                    signal_strength = (conviction * 0.25) - 0.10 
+                    Q[i] = Pi[i] + signal_strength
+                    
+                    base_uncertainty = shrunk_cov[i, i] * tau
+                    omega_diag[i] = base_uncertainty / max(conviction, 0.01)
 
                 Omega = np.diag(omega_diag)
-                tau_cov_inv = np.linalg.inv(tau * ewma_cov)
+                tau_cov_inv = np.linalg.inv(tau * shrunk_cov)
                 omega_inv = np.linalg.inv(Omega)
                 
                 term1 = np.linalg.inv(tau_cov_inv + np.dot(np.dot(P.T, omega_inv), P))
@@ -276,17 +310,32 @@ if st.session_state['run_quant_engine']:
                 
                 def neg_utility(w):
                     expected_return = np.sum(mu_bl * w)
-                    portfolio_variance = np.dot(w.T, np.dot(ewma_cov, w)) 
-                    return -(expected_return - (dynamic_lambda / 2.0) * portfolio_variance - (0.5 * np.sum(w**2)) - (0.02 * np.sum(np.abs(w - current_weights_arr))))
+                    portfolio_variance = np.dot(w.T, np.dot(shrunk_cov, w)) 
+                    return -(expected_return - (dynamic_lambda / 2.0) * portfolio_variance - (0.5 * np.sum(w**2)) - (turnover_penalty * np.sum(np.abs(w - current_weights_arr))))
                     
-                constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
-                bounds = tuple((0.0, 1.0) for _ in range(num_assets))
-                opt_result = minimize(neg_utility, num_assets * [1./num_assets], method='SLSQP', bounds=bounds, constraints=constraints, options={'maxiter': 200})
+                # 🌟 Optimizer Constraints ขั้นเทพ (Max weight + Sector Cap + Turnover Cap)
+                max_single_weight = 0.25 
+                bounds = tuple((0.0, max_single_weight) for _ in range(num_assets))
+                
+                constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
+                
+                # Hard Turnover Constraint (Max 30% shift per rebalance)
+                max_turnover_cap = 0.30 
+                constraints.append({'type': 'ineq', 'fun': lambda w: max_turnover_cap - np.sum(np.abs(w - current_weights_arr))})
+                
+                # Dynamic Sector Constraints
+                unique_sectors = port_df['Sector'].unique()
+                for sector in unique_sectors:
+                    sec_indices = [i for i, t in enumerate(port_tickers) if port_df.loc[port_df['Ticker'] == t, 'Sector'].values[0] == sector]
+                    constraints.append({'type': 'ineq', 'fun': lambda w, idx=sec_indices: max_sector_cap - np.sum(w[idx])})
+                
+                opt_result = minimize(neg_utility, num_assets * [1./num_assets], method='SLSQP', bounds=bounds, constraints=constraints, options={'maxiter': 300})
                 
                 if opt_result.success: port_df['Target_%'] = port_df['Ticker'].map(dict(zip(port_tickers, opt_result.x))) * 100.0
                 else: raise ValueError("Matrix Non-Convergence")
                     
             except Exception as e:
+                st.warning(f"Fallback to Risk Parity due to: {e}")
                 port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
                 port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
@@ -294,26 +343,12 @@ if st.session_state['run_quant_engine']:
             port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
             port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
-        # Hard Constraints (Python Layer)
-        sector_totals = port_df.groupby('Sector')['Current'].sum().reset_index()
-        overweight_sectors = []
-        max_sector_cap = 50 if is_panic else 70 
-        
-        for _, row in sector_totals.iterrows():
-            sec_weight = (row['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
-            if sec_weight > max_sector_cap: overweight_sectors.append(row['Sector'])
-            
-        if overweight_sectors:
-            port_df.loc[port_df['Sector'].isin(overweight_sectors), 'Target_%'] = 0.0
-            if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
-
-        # Circuit Breaker
+        # Hard Rule Execution Python Level
         fomo_list = [t for t in port_df['Ticker'] if rsi_data.get(t, 50) > 75] 
         if fomo_list:
             port_df.loc[port_df['Ticker'].isin(fomo_list), 'Target_%'] = 0.0
             if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
 
-        # Execution Budget Math (Python handles min_order logic)
         target_total = total_port_value + actual_budget
         port_df['Target_Val'] = target_total * (port_df['Target_%'] / 100)
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current'] 
@@ -326,7 +361,7 @@ if st.session_state['run_quant_engine']:
             port_df.loc[buy_mask, 'Buy_Amount'] = (port_df.loc[buy_mask, 'Deficit'] / sum_deficit) * actual_budget
             port_df['Buy_Amount'] = port_df['Buy_Amount'].apply(lambda x: round(x, 2) if x >= min_order_thb else 0.0)
         
-        sell_mask = (port_df['Deficit'] < -min_order_thb) & (port_df['Weight_%'] > max_sector_cap/2)
+        sell_mask = (port_df['Deficit'] < -min_order_thb) & (port_df['Weight_%'] > (max_sector_cap*100)/2)
         port_df.loc[sell_mask, 'Sell_Amount'] = port_df.loc[sell_mask, 'Deficit'].abs().round(2)
         
         cash_reserve = actual_budget - port_df['Buy_Amount'].sum()
@@ -351,12 +386,12 @@ if st.session_state['run_quant_engine']:
         proposed_buys_json = buy_list[['หุ้น', 'ซื้อ', 'Thesis']].to_dict('records')
 
         # ==========================================
-        # 🤖 AI INSTITUTIONAL DECISION ENGINE (JSON OUTPUT)
+        # 🤖 AI INSTITUTIONAL AUDIT ENGINE 
         # ==========================================
         st.markdown("---")
-        st.markdown("### 🏛️ ระบบตรวจสอบโดย AI (Institutional Decision Engine)")
+        st.markdown("### 🏛️ ระบบตรวจสอบโดย AI (Institutional Audit Engine)")
         
-        if st.button("🧠 รันระบบตรวจสอบ (Run AI Validation)", type="primary"):
+        if st.button("🧠 รันการตรวจสอบโครงสร้างพอร์ต (Run AI Audit)", type="primary"):
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
                 st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY")
@@ -369,6 +404,7 @@ if st.session_state['run_quant_engine']:
                         generation_config={"response_mime_type": "application/json"}
                     )
                     
+                    sector_totals = port_df.groupby('Sector')['Current'].sum().reset_index()
                     sector_exposure = [{"Sector": row['Sector'], "Weight_%": round((row['Current']/total_port_value)*100, 1) if total_port_value > 0 else 0} for _, row in sector_totals.iterrows()]
                     top_alpha = [{"Ticker": row['Ticker'], "Alpha_Score": round(row['Alpha_Score'], 2)} for _, row in final_df.head(5).iterrows()]
                     
@@ -378,84 +414,62 @@ if st.session_state['run_quant_engine']:
                         "proposed_buys": proposed_buys_json,
                         "current_sector_exposure": sector_exposure,
                         "top_alpha_candidates": top_alpha,
-                        "hard_constraints": "Sector Limit = 50%"
+                        "constraints": f"Max Single Weight: 25%, Max Sector: {max_sector_cap*100}%"
                     }
                     port_state_str = json.dumps(port_state, indent=2)
 
                     board_container = st.container()
                     with board_container:
-                        st.markdown("#### 📡 ข้อมูลดิบจาก Agent (JSON Structured Output)")
-                        col1, col2, col3 = st.columns(3)
+                        st.markdown("#### 📡 ตรวจพบช่องโหว่ความเสี่ยง (Audit JSON Log)")
+                        col1, col2 = st.columns(2)
                         
                         with col1:
-                            with st.spinner("PM Agent..."):
-                                prompt_pm = f"""
-                                Role: Portfolio Manager
-                                Objective: Maximize alpha. Evaluate if 'proposed_buys' align with 'top_alpha_candidates'.
-                                Portfolio State: {port_state_str}
-                                Return ONLY a valid JSON object matching this schema:
-                                {{
-                                  "decision": "APPROVE" or "REJECT",
-                                  "confidence": float (0.0 to 1.0),
-                                  "reason": "short explanation"
-                                }}
-                                """
-                                res_pm = model.generate_content(prompt_pm).text
-                                pm_data = json.loads(res_pm)
-                                st.json(pm_data)
-
-                        with col2:
-                            with st.spinner("Macro Agent..."):
-                                prompt_macro = f"""
-                                Role: Macro Strategist
-                                Objective: Assess market regime based on VIX.
-                                Portfolio State: {port_state_str}
-                                Return ONLY a valid JSON object matching this schema:
-                                {{
-                                  "regime_support": "FAVORABLE" or "UNFAVORABLE",
-                                  "confidence": float (0.0 to 1.0),
-                                  "reason": "short explanation"
-                                }}
-                                """
-                                res_macro = model.generate_content(prompt_macro).text
-                                macro_data = json.loads(res_macro)
-                                st.json(macro_data)
-
-                        with col3:
-                            with st.spinner("CRO Agent..."):
+                            with st.spinner("Risk Auditor (Python + AI)..."):
                                 prompt_cro = f"""
-                                Role: Chief Risk Officer
-                                Objective: Identify concentration risk. If ANY sector in 'current_sector_exposure' exceeds 50%, or if 'proposed_buys' worsens a high exposure, you MUST BLOCK.
+                                You are a strict Risk Audit system. Do not roleplay.
+                                Objective: Audit the 'Portfolio State' for constraint violations. Explain anomalies.
                                 Portfolio State: {port_state_str}
-                                Return ONLY a valid JSON object matching this schema:
+                                Return ONLY JSON:
                                 {{
-                                  "decision": "PASS" or "BLOCK",
-                                  "confidence": float (0.0 to 1.0),
-                                  "flagged_risk": "string (or null if none)",
-                                  "reason": "short explanation"
+                                  "risk_level": "LOW", "MEDIUM", or "HIGH",
+                                  "liquidity_concern": boolean,
+                                  "concentration_anomaly_detected": boolean,
+                                  "audit_explanation": "string"
                                 }}
                                 """
                                 res_cro = model.generate_content(prompt_cro).text
                                 cro_data = json.loads(res_cro)
                                 st.json(cro_data)
 
+                        with col2:
+                            with st.spinner("Alpha Auditor (Python + AI)..."):
+                                prompt_pm = f"""
+                                You are an Alpha Validation system. Do not roleplay.
+                                Objective: Verify if 'proposed_buys' aligns with high 'Alpha_Score' candidates. Provide reasoning.
+                                Portfolio State: {port_state_str}
+                                Return ONLY JSON:
+                                {{
+                                  "alpha_alignment_score": float (0.0 to 1.0),
+                                  "missed_opportunities": ["Ticker1", "Ticker2"],
+                                  "audit_explanation": "string"
+                                }}
+                                """
+                                res_pm = model.generate_content(prompt_pm).text
+                                pm_data = json.loads(res_pm)
+                                st.json(pm_data)
+
                         st.markdown("---")
-                        st.markdown("#### ⚖️ ระบบประเมินผลชี้ขาด (Python Execution Layer)")
+                        st.markdown("#### ⚖️ ระบบประเมินผลชี้ขาด (Python Governance Layer)")
                         
-                        pm_score = pm_data.get("confidence", 0) if pm_data.get("decision") == "APPROVE" else -pm_data.get("confidence", 0)
-                        macro_score = macro_data.get("confidence", 0) if macro_data.get("regime_support") == "FAVORABLE" else -macro_data.get("confidence", 0)
+                        python_sector_violation = any(sec['Weight_%'] > (max_sector_cap*100) for sec in sector_exposure)
+                        confidence = pm_data.get("alpha_alignment_score", 0.0)
                         
-                        total_score = (pm_score * 0.6) + (macro_score * 0.4)
-                        is_vetoed = cro_data.get("decision") == "BLOCK"
-                        
-                        st.info(f"📊 **System Score:** {total_score:.2f} (Threshold: > 0.3) | **CRO Veto:** {is_vetoed}")
-                        
-                        if is_vetoed:
-                            st.error(f"🔴 **FINAL VERDICT: REJECTED (HOLD CASH)**\n\n**Reason:** ถูกระงับโดยระบบคุมความเสี่ยง (CRO Veto) - {cro_data.get('flagged_risk')}\n\n*Action:* ระงับคำสั่งซื้อทั้งหมด เก็บเงินสด {actual_budget} บาท")
-                        elif total_score > 0.3:
-                            st.success(f"🟢 **FINAL VERDICT: APPROVED (EXECUTE)**\n\n**Reason:** คะแนนรวมผ่านเกณฑ์ และโครงสร้างความเสี่ยงปลอดภัย\n\n*Action:* อนุมัติยิงคำสั่งซื้อตามตาราง Quant Allocation ด้านบน")
+                        if python_sector_violation:
+                            st.error(f"🔴 **EXECUTION BLOCKED (HOLD CASH)**\n\n**Hard Constraint Failed:** Python ตรวจพบการละเมิดเพดาน Sector > {max_sector_cap*100}%\n**AI Risk Notes:** {cro_data.get('audit_explanation')}")
+                        elif confidence > 0.5:
+                            st.success(f"🟢 **EXECUTION APPROVED**\n\n**Audit Passed:** โครงสร้างความเสี่ยงถูกต้องตามสมการ Scipy Minimize (Confidence: {confidence})\n**AI Notes:** {pm_data.get('audit_explanation')}")
                         else:
-                            st.warning(f"🟡 **FINAL VERDICT: REJECTED (LOW CONFIDENCE)**\n\n**Reason:** คะแนนความเชื่อมั่นจากบอร์ดบริหารต่ำเกินไป ({total_score:.2f})\n\n*Action:* ชะลอการลงทุน เก็บเงินสด {actual_budget} บาท")
+                            st.warning(f"🟡 **EXECUTION WARNING**\n\n**Low AI Alignment:** {confidence} - ระบบอาจเสนอซื้อหุ้นเชิง Defensive มากกว่า Alpha ตามสภาวะตลาด\n**AI Notes:** {pm_data.get('audit_explanation')}")
                             
                 except json.JSONDecodeError:
                     st.error("❌ ขัดข้อง: AI ไม่ได้ตอบกลับมาเป็น JSON Format ที่ถูกต้อง")
