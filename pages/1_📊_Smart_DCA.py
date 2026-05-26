@@ -343,11 +343,24 @@ if st.session_state['run_quant_engine']:
             port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
             port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
-        # Hard Rule Execution Python Level
-        fomo_list = [t for t in port_df['Ticker'] if rsi_data.get(t, 50) > 75] 
+        # 🛑 RSI Mean Reversion Overlay (Institutional Logic)
+        fomo_list = []
+        for t in port_df['Ticker']:
+            rsi_val = rsi_data.get(t, 50)
+            if rsi_val > 75:
+                # คำนวณ Penalty Factor: ยิ่ง RSI สูง ยิ่งโดนกดน้ำหนักลง (แต่ไม่เป็น 0)
+                # สมมติ RSI = 85 จะโดนกดน้ำหนักเหลือประมาณ 60% ของที่ Optimizer คำนวณมา
+                penalty_factor = max(0.2, 1.0 - ((rsi_val - 75) / 25))
+                
+                # นำ Penalty ไปคูณลดน้ำหนักเป้าหมาย
+                port_df.loc[port_df['Ticker'] == t, 'Target_%'] *= penalty_factor
+                fomo_list.append(f"{t} (ลดน้ำหนัก {(1 - penalty_factor)*100:.0f}%)")
+        
         if fomo_list:
-            port_df.loc[port_df['Ticker'].isin(fomo_list), 'Target_%'] = 0.0
-            if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
+            # Re-normalize ให้สัดส่วนรวมกลับมาเป็น 100%
+            if port_df['Target_%'].sum() > 0: 
+                port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
+            fomo_msg = f"📉 **Mean Reversion Overlay:** ตรวจพบหุ้น Overbought ทำการลดน้ำหนักเพื่อควบคุมความเสี่ยง แต่ไม่ขัดขา Momentum -> {', '.join(fomo_list)}"
 
         target_total = total_port_value + actual_budget
         port_df['Target_Val'] = target_total * (port_df['Target_%'] / 100)
