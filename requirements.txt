@@ -6,3 +6,4 @@ plotly
 scipy
 deep_translator
 google-generativeai
+matplotlib
