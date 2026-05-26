@@ -160,6 +160,10 @@ st.session_state['portfolio_holdings'] = df_holdings_edited
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
 current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
+# 🛠️ ซ่อมบั๊กงบประมาณหาย
+actual_budget = budget 
+
+# 🛠️ ซ่อมบั๊กปุ่มเด้ง
 if 'run_quant_engine' not in st.session_state: st.session_state['run_quant_engine'] = False
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"): st.session_state['run_quant_engine'] = True
 
@@ -343,15 +347,13 @@ if st.session_state['run_quant_engine']:
             port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
             port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
-        # 🛑 RSI Mean Reversion Overlay (Institutional Logic)
+        # 🛑 RSI Mean Reversion Overlay (Institutional Logic ไม่แบนมั่วซั่วแล้ว)
         fomo_list = []
         for t in port_df['Ticker']:
             rsi_val = rsi_data.get(t, 50)
             if rsi_val > 75:
                 # คำนวณ Penalty Factor: ยิ่ง RSI สูง ยิ่งโดนกดน้ำหนักลง (แต่ไม่เป็น 0)
-                # สมมติ RSI = 85 จะโดนกดน้ำหนักเหลือประมาณ 60% ของที่ Optimizer คำนวณมา
                 penalty_factor = max(0.2, 1.0 - ((rsi_val - 75) / 25))
-                
                 # นำ Penalty ไปคูณลดน้ำหนักเป้าหมาย
                 port_df.loc[port_df['Ticker'] == t, 'Target_%'] *= penalty_factor
                 fomo_list.append(f"{t} (ลดน้ำหนัก {(1 - penalty_factor)*100:.0f}%)")
@@ -360,8 +362,9 @@ if st.session_state['run_quant_engine']:
             # Re-normalize ให้สัดส่วนรวมกลับมาเป็น 100%
             if port_df['Target_%'].sum() > 0: 
                 port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
-            fomo_msg = f"📉 **Mean Reversion Overlay:** ตรวจพบหุ้น Overbought ทำการลดน้ำหนักเพื่อควบคุมความเสี่ยง แต่ไม่ขัดขา Momentum -> {', '.join(fomo_list)}"
+            fomo_msg = f"📉 **Mean Reversion Overlay:** ตรวจพบหุ้น Overbought ทำการลดเป้าหมายเพื่อคุมความเสี่ยง แต่ไม่ขัดขา Momentum -> {', '.join(fomo_list)}"
 
+        # Execution Budget Math 
         target_total = total_port_value + actual_budget
         port_df['Target_Val'] = target_total * (port_df['Target_%'] / 100)
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current'] 
@@ -392,6 +395,7 @@ if st.session_state['run_quant_engine']:
         for c in ['เป้า%', 'ทุนเดิม']: out[c] = out[c].round(2)
             
         st.markdown(f"### 📋 2. ตาราง Quant Allocation")
+        if fomo_msg: st.warning(fomo_msg)
         display_cols = ['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']
         st.dataframe(out[display_cols].sort_values(by='ซื้อ', ascending=False), use_container_width=True, hide_index=True)
         
