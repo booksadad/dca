@@ -459,3 +459,127 @@ if st.button("🚀 รันระบบ Ultimate Rebalancer", type="primary"):
                 col_bt1.metric("CAGR พอร์ตเรา (เฉลี่ยต่อปี)", f"{(((port_cum.iloc[-1] / 100) ** (1/yp)) - 1)*100:.2f}%")
                 col_bt2.metric("CAGR ตลาด S&P 500", f"{(((voo_cum.iloc[-1] / 100) ** (1/yp)) - 1)*100:.2f}%")
             except Exception as e: st.error(f"ข้อมูลหุ้นบางตัวสั้นกว่า 3 ปี ({e})")
+        # ==========================================
+        # 🤖 THE 0.1% QUANT BOARD (5-Agent Architecture)
+        # ==========================================
+        st.markdown("---")
+        st.markdown("### 🏛️ บอร์ดบริหารกองทุน (The 0.1% Quant Board)")
+        
+        if st.button("⚖️ เรียกประชุมบอร์ดบริหาร (Run 5-Agent Simulation)", type="primary"):
+            api_key = st.secrets.get("GEMINI_API_KEY")
+            if not api_key:
+                st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings -> Secrets")
+            else:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=api_key)
+                    # ใช้ Flash-Lite เพื่อความรวดเร็วในการรัน 5 ตัวติดกัน
+                    model = genai.GenerativeModel('gemini-3.1-flash-lite')
+                    
+                    # 📊 ข้อมูลตั้งต้นสำหรับที่ประชุม
+                    buy_str = "\n".join([f"- {row['หุ้น']}: ซื้อ {row['ซื้อ']} บาท" for _, row in buy_list.iterrows()])
+                    if not buy_str: buy_str = "- ไม่มีคำสั่งซื้อในรอบนี้"
+                    current_port_str = ", ".join([f"{row['หุ้น']} ({row['ทุนเดิม']} บ.)" for _, row in out.iterrows() if row['ทุนเดิม'] > 0])
+                    if not current_port_str: current_port_str = "พอร์ตว่างเปล่า"
+                    top_alpha_str = ", ".join(final_df['Ticker'].head(5).tolist())
+
+                    board_container = st.container()
+                    
+                    with board_container:
+                        st.markdown("#### 📝 บันทึกการประชุม (Meeting Minutes)")
+                        
+                        # -----------------------------------------
+                        # 🚀 1. The Alpha PM (นำเสนอแผนบุก)
+                        # -----------------------------------------
+                        with st.spinner("🚀 PM กำลังร่างแผนโจมตี..."):
+                            prompt_pm = f"""
+                            คุณคือ 🚀 'The Alpha PM' (ผู้จัดการกองทุนสายบุก) หิวโหย Alpha และเกลียดการถือเงินสด
+                            VIX={vix_current:.1f}, หุ้นในพอร์ต={current_port_str}, จ่าฝูง Alpha={top_alpha_str}
+                            โพยสั่งซื้อตั้งต้นจากสมการ: {buy_str}
+                            งบ: {actual_budget} บาท
+                            
+                            คำสั่ง: 
+                            - มองข้ามความเสี่ยง (เดี๋ยว CRO จัดการเอง) ให้เสนอแผน "บุกทะลวง" ที่สุด 
+                            - ถ้าโพยตั้งต้นมันปอดแหก (ซื้อหุ้น Defensive) ให้ด่า แล้วเสนอให้ดึงหุ้นจาก 'จ่าฝูง Alpha' มาเสียบแทน
+                            - ตอบสั้นๆ ดุดัน 2-3 บรรทัด ห้ามมีคำเกริ่นนำ
+                            """
+                            pm_plan = model.generate_content(prompt_pm).text
+                            st.success(f"**🚀 1. The Alpha PM:**\n{pm_plan}")
+
+                        # -----------------------------------------
+                        # 🌐 2. The Macro-Quant Architect (เช็กสภาพอากาศ)
+                        # -----------------------------------------
+                        with st.spinner("🌐 Architect กำลังประเมินสภาวะตลาด..."):
+                            prompt_architect = f"""
+                            คุณคือ 🌐 'Macro-Quant Architect' สุขุม เยือกเย็น ประเมินสถิติและสภาวะตลาด
+                            VIX={vix_current:.1f}
+                            แผนของ PM: {pm_plan}
+                            
+                            คำสั่ง: 
+                            - ประเมินว่าค่า VIX ปัจจุบัน เอื้อต่อความบ้าบิ่นของแผน PM หรือไม่?
+                            - ถ้า VIX ต่ำกว่า 20 ให้ไฟเขียว ถ้าเกิน 25 ให้ด่า PM ว่ากำลังพากองทุนไปตาย 
+                            - ตอบสั้นๆ เชิงสถิติ 2 บรรทัด ห้ามวิเคราะห์งบการเงิน
+                            """
+                            architect_view = model.generate_content(prompt_architect).text
+                            st.info(f"**🌐 2. The Macro Architect:**\n{architect_view}")
+
+                        # -----------------------------------------
+                        # 🛡️ 3. The Ruthless CRO (สกัดจุดตาย)
+                        # -----------------------------------------
+                        with st.spinner("🛡️ CRO กำลังคำนวณ Tail Risk..."):
+                            prompt_cro = f"""
+                            คุณคือ 🛡️ 'Ruthless CRO' ยมบาลประจำพอร์ต ขี้ระแวงขั้นสุด เกลียดการกระจุกตัว
+                            พอร์ตเดิม: {current_port_str}
+                            แผนของ PM: {pm_plan}
+                            ความเห็น Architect: {architect_view}
+                            
+                            คำสั่ง:
+                            - หาจุดตาย! ถ้าแผนของ PM ไปทับซ้อนกับ Sector ที่เรามีเยอะแล้วในพอร์ตเดิม ให้สั่ง "แบน" (Kill Switch) หุ้นตัวนั้นทิ้งทันที!
+                            - ถ้ากระจายตัวดีอยู่แล้ว ให้ปล่อยผ่าน 
+                            - ตอบสั้นๆ ปากคอเราะร้าย 2 บรรทัด ห้ามเสนอหุ้นตัวใหม่ (คุณมีสิทธิ์แค่สั่งฆ่า)
+                            """
+                            cro_view = model.generate_content(prompt_cro).text
+                            st.warning(f"**🛡️ 3. The Ruthless CRO:**\n{cro_view}")
+
+                        # -----------------------------------------
+                        # ⚙️ 4. The Micro-Execution Engineer (คุมงบ 500 บ.)
+                        # -----------------------------------------
+                        with st.spinner("⚙️ Engineer กำลังคำนวณต้นทุนหน้าตัก..."):
+                            prompt_engineer = f"""
+                            คุณคือ ⚙️ 'Execution Engineer' นักบัญชีจอมงก เจ้าระเบียบ
+                            งบประมาณ: {actual_budget} บาท (กฎเหล็กแอป Dime!: ซื้อขั้นต่ำ 50 บาทต่อ 1 ออเดอร์)
+                            บทสรุปเบื้องต้น: แผนบุกคือ ({pm_plan}) และข้อห้ามคือ ({cro_view})
+                            
+                            คำสั่ง:
+                            - จัดการตัวเลข! ถ้างบ 500 บาทถูกหั่นไปซื้อหุ้นหลายตัวเกินไปจนต่ำกว่า 50 บาท หรือเสียเปรียบ Spread ให้ด่าว่า "โง่เขลา!" แล้วสั่งยุบรวมให้เหลือซื้อแค่ 1-2 ตัวเท่านั้น
+                            - ห้ามเลือกหุ้นเอง ให้เอาตัวที่รอดจาก CRO มาแบ่งเงินให้คุ้มค่าที่สุด
+                            - ตอบสั้นๆ เน้นตัวเลข 2 บรรทัด
+                            """
+                            engineer_view = model.generate_content(prompt_engineer).text
+                            st.error(f"**⚙️ 4. The Execution Engineer:**\n{engineer_view}")
+
+                        # -----------------------------------------
+                        # ⚖️ 5. The Global CIO (ฟันธง!)
+                        # -----------------------------------------
+                        with st.spinner("⚖️ CIO กำลังเคาะมติที่ประชุม..."):
+                            prompt_cio = f"""
+                            คุณคือ ⚖️ 'Global CIO' ประธานผู้มีอำนาจชี้ขาด เด็ดขาด ไร้ความลังเล
+                            
+                            รายงานบอร์ด:
+                            - PM เสนอ: {pm_plan}
+                            - Architect เสริม: {architect_view}
+                            - CRO เตือน: {cro_view}
+                            - Engineer สรุปตัวเลข: {engineer_view}
+                            
+                            คำสั่ง: เคาะโต๊ะฟันธง! สรุปทั้งหมดออกมาเป็นรูปแบบนี้ (ห้ามมีคำอื่น):
+                            
+                            1. 🏁 **มติที่ประชุม (Verdict):** [🟢 EXECUTE (ลุย) / 🟡 OVERRIDE (ปรับแก้) / 🔴 VETO (ถือเงินสด)]
+                            2. 🎯 **The Action Plan:** สรุปกลยุทธ์ 1 ประโยค (บอกชื่อหุ้นและไอเดียการจัดสรรงบ {actual_budget} บาท ที่นำไปกดซื้อในแอปได้จริง)
+                            """
+                            cio_verdict = model.generate_content(prompt_cio).text
+                            
+                        st.markdown("---")
+                        st.success(f"### ⚖️ คำสั่งปฏิบัติการจาก CIO (Final Verdict)\n{cio_verdict}")
+                            
+                except Exception as e:
+                    st.error(f"❌ บอร์ดบริหารเกิดข้อขัดข้องทางเทคนิค: {e}")
