@@ -223,22 +223,34 @@ if st.session_state['run_quant_engine']:
         drawdown = (prices_1y - roll_max) / roll_max
         max_dd = drawdown.min() * 100
         
-        # 🧬 The Real Alpha (Residual Momentum & Cached Fundamentals)
         df_fundamentals = fetch_fundamental_data(prices_1y.columns.tolist())
         metrics = []
         rsi_data, sr_data = {}, {}
         
+        # 🛠️ Fix: Align arrays เพื่อป้องกันสมการ np.cov ล่มเวลาความยาวข้อมูลไม่เท่ากัน
+        mkt_ret_aligned = voo_ret.reindex(returns_1y.index).fillna(0)
+        
         for t in prices_1y.columns:
             try:
-                cov = np.cov(returns_1y[t], voo_ret)[0][1]
-                var = np.var(voo_ret)
+                # คำนวณ Beta แบบปลอดภัย
+                cov = np.cov(returns_1y[t], mkt_ret_aligned)[0][1]
+                var = np.var(mkt_ret_aligned)
                 beta = cov / var if var > 0 else 1.0
                 
-                ret_6m = prices_1y[t].pct_change(periods=126).iloc[-1]
-                mkt_ret_6m = market_data[benchmark].pct_change(periods=126).iloc[-1]
+                # คำนวณผลตอบแทน 6 เดือนย้อนหลังแบบยืดหยุ่น (เผื่อหุ้นบางตัวเข้าตลาดไม่ถึง 6 เดือน)
+                series_t = prices_1y[t].dropna()
+                series_mkt = market_data[benchmark].dropna()
+                
+                if len(series_t) >= 126 and len(series_mkt) >= 126:
+                    ret_6m = (series_t.iloc[-1] / series_t.iloc[-126]) - 1
+                    mkt_ret_6m = (series_mkt.iloc[-1] / series_mkt.iloc[-126]) - 1
+                else:
+                    ret_6m = (series_t.iloc[-1] / series_t.iloc[0]) - 1
+                    mkt_ret_6m = (series_mkt.iloc[-1] / series_mkt.iloc[0]) - 1
+                    
                 residual_mom = ret_6m - (beta * mkt_ret_6m) 
-            except: 
-                residual_mom = 0.0
+            except Exception as e: 
+                residual_mom = 0.0 # ถ้าล่มจริงๆ ค่อยปัดเป็น 0
                 
             metrics.append({'Ticker': t, 'Residual_Mom': residual_mom})
             
