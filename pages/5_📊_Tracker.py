@@ -1,190 +1,148 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
+import plotly.express as px
 import plotly.graph_objects as go
 import os
+import warnings
 
-st.set_page_config(page_title="The 400M Tracker", page_icon="📈", layout="wide")
+warnings.filterwarnings("ignore")
 
-# ==========================================
-# 💾 ดึงข้อมูลพอร์ตปัจจุบันอัตโนมัติ
-# ==========================================
 PORTFOLIO_FILE = "my_portfolio_data.csv"
-current_port_value = 0.0
 
+st.set_page_config(page_title="QuantHQ Tracker", page_icon="📈", layout="wide")
+st.title("📈 QUANT-HQ: Strategy Lab & Portfolio Analytics")
+st.markdown("ระบบจำลองผลตอบแทนย้อนหลัง (Backtesting) และตรวจสอบมาตรวัดระดับสถาบัน")
+st.markdown("---")
+
+# 1. โหลดข้อมูลพอร์ตปัจจุบัน
+my_portfolio = []
 if os.path.exists(PORTFOLIO_FILE):
     try:
-        saved_df = pd.read_csv(PORTFOLIO_FILE)
-        if not saved_df.empty and "ยอดเงินปัจจุบัน (บาท)" in saved_df.columns:
-            current_port_value = pd.to_numeric(saved_df["ยอดเงินปัจจุบัน (บาท)"], errors='coerce').sum()
-    except Exception:
-        pass
+        temp_df = pd.read_csv(PORTFOLIO_FILE)
+        if not temp_df.empty and "รายชื่อหุ้น" in temp_df.columns:
+            my_portfolio = [str(t).strip().upper() for t in temp_df["รายชื่อหุ้น"].tolist() if str(t).strip()]
+    except: pass
 
-# ==========================================
-# 🎨 UI & Header
-# ==========================================
-st.title("📈 THE 400M TRACKER (สมุดพกความรวย)")
-st.markdown("ระบบคำนวณและติดตามเส้นทางสู่อิสรภาพทางการเงิน **เป้าหมาย: 400 ล้านบาท** 🚀")
-st.markdown("---")
+if not my_portfolio:
+    st.warning("⚠️ ไม่พบหุ้นในพอร์ต โปรดไปตั้งค่าพอร์ตที่หน้า Smart DCA ก่อนครับ")
+    st.stop()
 
-# ==========================================
-# 🎛️ แผงควบคุม (Inputs)
-# ==========================================
-st.sidebar.subheader("⚙️ ตัวแปรสมการความมั่งคั่ง")
-current_age = st.sidebar.number_input("อายุปัจจุบัน (ปี)", min_value=15, max_value=80, value=21)
-target_age = st.sidebar.number_input("เป้าหมายอายุที่อยากเกษียณ (ปี)", min_value=30, max_value=100, value=40)
+st.sidebar.markdown(f"**💼 หุ้นในพอร์ตปัจจุบัน:**\n{', '.join(my_portfolio)}")
 
-st.sidebar.markdown("---")
-start_principal = st.sidebar.number_input("เงินต้นปัจจุบันในพอร์ต (บาท)", min_value=0.0, value=float(current_port_value), step=1000.0)
-monthly_dca = st.sidebar.number_input("เงินเติม DCA รายเดือน (บาท)", min_value=0.0, value=4000.0, step=500.0)
-st.sidebar.caption("💡 แนะนำ: 4,000 บ./เดือน (เท่ากับสัปดาห์ละ 1,000 บ.)")
+# 2. ตั้งค่า Backtest
+col1, col2 = st.columns(2)
+with col1:
+    lookback_years = st.slider("🕰️ ระยะเวลาย้อนหลัง (ปี)", 1, 10, 3)
+with col2:
+    benchmark_ticker = st.selectbox("📊 ดัชนีเปรียบเทียบ (Benchmark)", ["VOO", "QQQ", "DIA"])
 
-st.sidebar.markdown("---")
-expected_cagr = st.sidebar.slider("ผลตอบแทนคาดหวังต่อปี (CAGR %)", min_value=5.0, max_value=30.0, value=15.0, step=0.5)
-st.sidebar.caption("🎯 เป้าหมายระบบ Max Sharpe ของเราคือ 15% - 20% ต่อปี")
-
-# ==========================================
-# 🧮 คณิตศาสตร์ประยุกต์: Compound Interest
-# ==========================================
-years_to_grow = target_age - current_age
-months_to_grow = years_to_grow * 12
-
-# แปลงผลตอบแทนรายปี เป็นรายเดือน
-monthly_rate = (1 + expected_cagr / 100) ** (1/12) - 1
-
-ages = []
-portfolio_values = []
-total_invested_list = []
-
-current_balance = start_principal
-total_invested = start_principal
-
-for month in range(months_to_grow + 1):
-    if month % 12 == 0:
-        ages.append(current_age + (month // 12))
-        portfolio_values.append(current_balance)
-        total_invested_list.append(total_invested)
+if st.button("🚀 รันระบบ Backtest & Analytics", type="primary"):
+    with st.spinner(f"⏳ กำลังดึงข้อมูลย้อนหลัง {lookback_years} ปี และจำลอง Equity Curve..."):
         
-    # ดอกเบี้ยทบต้น + เติมเงินรายเดือน
-    current_balance = current_balance * (1 + monthly_rate) + monthly_dca
-    total_invested += monthly_dca
-
-final_value = portfolio_values[-1]
-target_goal = 400_000_000
-progress_percent = min((final_value / target_goal) * 100, 100)
-
-# ==========================================
-# 📊 แดชบอร์ดแสดงผล (Metrics)
-# ==========================================
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("💼 ยอดเงินปัจจุบัน", f"฿{start_principal:,.2f}")
-c2.metric(f"🎯 คาดการณ์ตอนอายุ {target_age} ปี", f"฿{final_value:,.2f}", f"{progress_percent:.2f}% ของเป้า 400M")
-c3.metric("💸 เงินต้นที่ควักกระเป๋าจริง", f"฿{total_invested_list[-1]:,.2f}")
-c4.metric("✨ ดอกเบี้ย/กำไรที่ระบบทำได้", f"฿{(final_value - total_invested_list[-1]):,.2f}")
-
-if final_value >= target_goal:
-    st.success(f"🎉 **ยินดีด้วย!** ด้วยแผนนี้ คุณจะบรรลุเป้าหมาย 400 ล้านบาท ได้ทันเวลาอย่างแน่นอน!")
-else:
-    st.warning(f"⚠️ **Mission Alert:** เป้าหมายยังขาดอีก ฿{(target_goal - final_value):,.2f} ลองปรับเพิ่มเงิน DCA หรือยืดอายุเกษียณดูครับ")
-
-# ==========================================
-# 📈 กราฟเส้นทางความมั่งคั่ง (Wealth Trajectory)
-# ==========================================
-st.markdown("### 🌌 แผนที่เดินทาง (Wealth Trajectory)")
-
-fig = go.Figure()
-
-# เส้นเป้าหมาย 400 ล้าน
-fig.add_hline(y=target_goal, line_dash="dash", line_color="red", annotation_text="เป้าหมาย 400 ล้านบาท", annotation_position="top left")
-
-# พื้นที่เงินต้นที่เติมเข้าไป (ทุน)
-fig.add_trace(go.Scatter(
-    x=ages, y=total_invested_list,
-    mode='lines',
-    fill='tozeroy',
-    name='เงินต้น (Principal)',
-    line=dict(color='rgba(255, 255, 255, 0.3)', width=2)
-))
-
-# พื้นที่พอร์ตโฟลิโอรวม (เงินต้น + กำไร)
-fig.add_trace(go.Scatter(
-    x=ages, y=portfolio_values,
-    mode='lines',
-    fill='tonexty',
-    name='มูลค่าพอร์ต (Portfolio Value)',
-    line=dict(color='#00ff88', width=4)
-))
-
-fig.update_layout(
-    xaxis_title="อายุ (Age)",
-    yaxis_title="มูลค่าพอร์ต (THB)",
-    height=500,
-    hovermode="x unified",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# ==========================================
-# 🏆 ระบบแจ้งเตือนจุดเช็คพอยต์ (Milestones)
-# ==========================================
-st.markdown("### 🏆 จุดเช็คพอยต์ความมั่งคั่ง (Milestones)")
-
-milestones = [1_000_000, 10_000_000, 50_000_000, 100_000_000, 400_000_000]
-achieved_ages = {}
-
-for m in milestones:
-    for age, val in zip(ages, portfolio_values):
-        if val >= m:
-            achieved_ages[m] = age
-            break
-
-col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
-milestone_cols = [col_m1, col_m2, col_m3, col_m4, col_m5]
-milestone_labels = ["1 ล้านบาท", "10 ล้านบาท", "50 ล้านบาท", "100 ล้านบาท", "400 ล้านบาท"]
-
-for idx, m in enumerate(milestones):
-    with milestone_cols[idx]:
-        if m in achieved_ages:
-            st.success(f"**{milestone_labels[idx]}**\n\nบรรลุตอนอายุ: **{achieved_ages[m]} ปี** 🟢")
-        else:
-            st.error(f"**{milestone_labels[idx]}**\n\nยังไปไม่ถึงในกรอบเวลา 🔴")
-
-# ==========================================
-# 🥊 เปรียบเทียบกับตลาดโลก (S&P 500 Benchmark)
-# ==========================================
-st.markdown("---")
-with st.expander("🥊 เปรียบเทียบผลงาน: พอร์ตของเรา VS ตลาดโลก (S&P 500)", expanded=False):
-    st.markdown("สมมติฐาน: S&P 500 ให้ผลตอบแทนเฉลี่ยระยะยาวที่ **10% ต่อปี** (CAGR)")
-    
-    sp500_rate = (1 + 10.0 / 100) ** (1/12) - 1
-    sp500_values = []
-    current_sp500 = start_principal
-    
-    for month in range(months_to_grow + 1):
-        if month % 12 == 0:
-            sp500_values.append(current_sp500)
-        current_sp500 = current_sp500 * (1 + sp500_rate) + monthly_dca
+        # ดึงข้อมูลราคา
+        tickers_to_fetch = list(set(my_portfolio + [benchmark_ticker]))
+        data = yf.download(tickers_to_fetch, period=f"{lookback_years}y", progress=False)['Close']
+        data = data.dropna()
         
-    fig_comp = go.Figure()
-    
-    fig_comp.add_trace(go.Scatter(
-        x=ages, y=portfolio_values,
-        mode='lines', name=f'พอร์ตเรา ({expected_cagr}% CAGR)',
-        line=dict(color='#00ff88', width=3)
-    ))
-    
-    fig_comp.add_trace(go.Scatter(
-        x=ages, y=sp500_values,
-        mode='lines', name='ซื้อทิ้ง S&P 500 (10% CAGR)',
-        line=dict(color='#ff4b4b', width=2, dash='dash')
-    ))
-    
-    fig_comp.update_layout(
-        xaxis_title="อายุ (Age)", yaxis_title="มูลค่าพอร์ต (THB)",
-        height=400, hovermode="x unified"
-    )
-    st.plotly_chart(fig_comp, use_container_width=True)
-    
-    diff = final_value - sp500_values[-1]
-    st.info(f"💡 การจัดพอร์ตแบบ Quant ด้วยระบบของเรา สร้างส่วนต่างกำไรเหนือตลาดโลกได้ถึง **฿{diff:,.2f}** ในระยะเวลา {years_to_grow} ปี!")
+        if data.empty:
+            st.error("❌ ดึงข้อมูลล้มเหลว หรือหุ้นบางตัวเพิ่งเข้าตลาดไม่ถึงเวลาที่กำหนด")
+            st.stop()
+
+        # 3. คำนวณผลตอบแทนรายวัน (Daily Returns) แบบ Equal Weight สบายๆ ก่อน
+        daily_ret = data.pct_change().dropna()
+        
+        valid_port_tickers = [t for t in my_portfolio if t in daily_ret.columns]
+        port_weight = 1.0 / len(valid_port_tickers)
+        
+        # สมมติฐานพอร์ต: Equal Weight Rebalance ทุกวัน (ง่ายสุดในการทำ Baseline)
+        port_daily_ret = (daily_ret[valid_port_tickers] * port_weight).sum(axis=1)
+        bench_daily_ret = daily_ret[benchmark_ticker]
+        
+        # คำนวณ Equity Curve (เส้นความมั่งคั่ง) เริ่มต้น 100
+        port_cum = (1 + port_daily_ret).cumprod() * 100
+        bench_cum = (1 + bench_daily_ret).cumprod() * 100
+        
+        # 4. คำนวณ Institutional Metrics
+        years = len(daily_ret) / 252
+        
+        def calc_metrics(daily_returns, cum_returns):
+            cagr = ((cum_returns.iloc[-1] / 100) ** (1 / years)) - 1
+            ann_vol = daily_returns.std() * np.sqrt(252)
+            sharpe = cagr / ann_vol if ann_vol > 0 else 0
+            
+            # Sortino Ratio (ลงโทษเฉพาะขาลง)
+            downside = daily_returns.copy()
+            downside[downside > 0] = 0
+            down_vol = downside.std() * np.sqrt(252)
+            sortino = cagr / down_vol if down_vol > 0 else 0
+            
+            # Max Drawdown
+            roll_max = cum_returns.cummax()
+            drawdown = (cum_returns - roll_max) / roll_max
+            mdd = drawdown.min()
+            
+            return cagr*100, ann_vol*100, sharpe, sortino, mdd*100
+
+        port_cagr, port_vol, port_sharpe, port_sortino, port_mdd = calc_metrics(port_daily_ret, port_cum)
+        bench_cagr, bench_vol, bench_sharpe, bench_sortino, bench_mdd = calc_metrics(bench_daily_ret, bench_cum)
+
+        # ==========================================
+        # 📊 แสดงผล (Visualizations)
+        # ==========================================
+        st.markdown(f"### 📈 เส้นโค้งความมั่งคั่ง (Equity Curve) เทียบ {benchmark_ticker}")
+        
+        df_plot = pd.DataFrame({'วันที่': port_cum.index, 'Quant Portfolio': port_cum.values, 'Benchmark': bench_cum.values})
+        fig_eq = px.line(df_plot, x='วันที่', y=['Quant Portfolio', 'Benchmark'], 
+                         color_discrete_sequence=['#00d4ff', '#ff4b4b'])
+        fig_eq.update_layout(yaxis_title="มูลค่าพอร์ต (เริ่ม 100)", legend_title="", height=400)
+        st.plotly_chart(fig_eq, use_container_width=True)
+        
+        st.markdown("### 🏆 สรุปมาตรวัดระดับสถาบัน (Institutional Metrics)")
+        
+        # สร้างตารางเปรียบเทียบ
+        metrics_df = pd.DataFrame({
+            "Metric": ["CAGR (ผลตอบแทน/ปี)", "Volatility (ความผันผวน)", "Sharpe Ratio", "Sortino Ratio", "Max Drawdown (หลุมยุบ)"],
+            "Quant Portfolio": [f"{port_cagr:.2f}%", f"{port_vol:.2f}%", f"{port_sharpe:.2f}", f"{port_sortino:.2f}", f"{port_mdd:.2f}%"],
+            benchmark_ticker: [f"{bench_cagr:.2f}%", f"{bench_vol:.2f}%", f"{bench_sharpe:.2f}", f"{bench_sortino:.2f}", f"{bench_mdd:.2f}%"]
+        })
+        
+        st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+        
+        # ------------------------------------------
+        # ⚠️ DRAWDOWN MONITOR
+        # ------------------------------------------
+        st.markdown("---")
+        st.markdown("### 🕳️ แผนผังความเจ็บปวด (Drawdown Monitor)")
+        
+        port_roll_max = port_cum.cummax()
+        port_dd = (port_cum - port_roll_max) / port_roll_max * 100
+        
+        fig_dd = px.area(x=port_dd.index, y=port_dd.values, color_discrete_sequence=['#ff4b4b'])
+        fig_dd.update_layout(xaxis_title="วันที่", yaxis_title="Drawdown (%)", height=250, margin=dict(t=10, b=10))
+        st.plotly_chart(fig_dd, use_container_width=True)
+        
+        # ------------------------------------------
+        # 📡 RISK EXPOSURE ANALYSIS
+        # ------------------------------------------
+        st.markdown("### 📡 วิเคราะห์ความเสี่ยงรายตัว (Risk Exposure)")
+        
+        risk_data = []
+        for t in valid_port_tickers:
+            t_ret = daily_ret[t]
+            t_cum = (1 + t_ret).cumprod() * 100
+            t_cagr, t_vol, t_sharpe, _, t_mdd = calc_metrics(t_ret, t_cum)
+            
+            # คำนวณ Beta (ความแกว่งเทียบตลาด)
+            cov = np.cov(t_ret, bench_daily_ret)[0][1]
+            var = np.var(bench_daily_ret)
+            beta = cov / var if var > 0 else 1.0
+            
+            risk_data.append({
+                "หุ้น": t, "CAGR (%)": t_cagr, "Volatility (%)": t_vol, 
+                "Sharpe": t_sharpe, "Max Drawdown (%)": t_mdd, "Beta (vs Mkt)": beta
+            })
+            
+        df_risk = pd.DataFrame(risk_data).round(2)
+        st.dataframe(df_risk.style.background_gradient(cmap='RdYlGn', subset=['CAGR (%)', 'Sharpe']).background_gradient(cmap='RdYlGn_r', subset=['Max Drawdown (%)', 'Beta (vs Mkt)']), use_container_width=True, hide_index=True)
