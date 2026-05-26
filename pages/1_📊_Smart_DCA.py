@@ -137,9 +137,17 @@ current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], 
 sniper_msg, lambda_msg, fomo_msg = "", "", ""
 actual_budget = budget 
 
+# 🛠️ แก้ไขบั๊กปุ่มเด้ง: สร้างตัวแปรความจำในระบบ
+if 'run_quant_engine' not in st.session_state:
+    st.session_state['run_quant_engine'] = False
+
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
+    st.session_state['run_quant_engine'] = True
+
+if st.session_state['run_quant_engine']:
     if not my_portfolio: 
         st.error("⚠️ โปรดระบุชื่อหุ้นก่อนครับ")
+        st.session_state['run_quant_engine'] = False
     else:
         status_box = st.status(f"🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=True)
         
@@ -356,13 +364,11 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
                 try:
                     import google.generativeai as genai
                     genai.configure(api_key=api_key)
-                    # 🛠️ บังคับให้ AI ตอบกลับเป็น JSON เท่านั้น
                     model = genai.GenerativeModel(
                         'gemini-3.1-flash-lite',
                         generation_config={"response_mime_type": "application/json"}
                     )
                     
-                    # 📊 เตรียม Portfolio State แบบ Data-driven
                     sector_exposure = [{"Sector": row['Sector'], "Weight_%": round((row['Current']/total_port_value)*100, 1) if total_port_value > 0 else 0} for _, row in sector_totals.iterrows()]
                     top_alpha = [{"Ticker": row['Ticker'], "Alpha_Score": round(row['Alpha_Score'], 2)} for _, row in final_df.head(5).iterrows()]
                     
@@ -381,9 +387,6 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
                         st.markdown("#### 📡 ข้อมูลดิบจาก Agent (JSON Structured Output)")
                         col1, col2, col3 = st.columns(3)
                         
-                        # -----------------------------------------
-                        # 🚀 1. Alpha PM (ประเมินโมเมนตัม)
-                        # -----------------------------------------
                         with col1:
                             with st.spinner("PM Agent..."):
                                 prompt_pm = f"""
@@ -401,9 +404,6 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
                                 pm_data = json.loads(res_pm)
                                 st.json(pm_data)
 
-                        # -----------------------------------------
-                        # 🌐 2. Macro Strategist (ประเมินสภาวะตลาด)
-                        # -----------------------------------------
                         with col2:
                             with st.spinner("Macro Agent..."):
                                 prompt_macro = f"""
@@ -421,9 +421,6 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
                                 macro_data = json.loads(res_macro)
                                 st.json(macro_data)
 
-                        # -----------------------------------------
-                        # 🛡️ 3. CRO (ประเมินความเสี่ยงและสัดส่วน)
-                        # -----------------------------------------
                         with col3:
                             with st.spinner("CRO Agent..."):
                                 prompt_cro = f"""
@@ -442,17 +439,13 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
                                 cro_data = json.loads(res_cro)
                                 st.json(cro_data)
 
-                        # -----------------------------------------
-                        # ⚖️ 4. Python Scoring Engine (CIO อัตโนมัติ)
-                        # -----------------------------------------
                         st.markdown("---")
                         st.markdown("#### ⚖️ ระบบประเมินผลชี้ขาด (Python Execution Layer)")
                         
-                        # คำนวณคะแนนตามน้ำหนัก (Scoring Algorithm)
                         pm_score = pm_data.get("confidence", 0) if pm_data.get("decision") == "APPROVE" else -pm_data.get("confidence", 0)
                         macro_score = macro_data.get("confidence", 0) if macro_data.get("regime_support") == "FAVORABLE" else -macro_data.get("confidence", 0)
                         
-                        total_score = (pm_score * 0.6) + (macro_score * 0.4) # PM น้ำหนัก 60%, Macro 40%
+                        total_score = (pm_score * 0.6) + (macro_score * 0.4)
                         is_vetoed = cro_data.get("decision") == "BLOCK"
                         
                         st.info(f"📊 **System Score:** {total_score:.2f} (Threshold: > 0.3) | **CRO Veto:** {is_vetoed}")
