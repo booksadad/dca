@@ -62,7 +62,7 @@ def fetch_fundamental_data(tickers):
             block_print()
             info = yf.Ticker(t).info
             enable_print()
-            roa = info.get('returnOnAssets', 0.0) # กัน NaN ให้อัตโนมัติ
+            roa = info.get('returnOnAssets', 0.0)
             margin = info.get('profitMargins', 0.0)
             peg = info.get('pegRatio', 1.0)
             fcf = info.get('freeCashflow', 0.0)
@@ -248,7 +248,6 @@ if st.session_state['run_quant_engine']:
             
         df_metrics = pd.merge(pd.DataFrame(metrics), df_fundamentals, on='Ticker')
         
-        # 🛠️ อุดรอยรั่ว NaN 100%
         z_mom = calc_zscore(df_metrics['Residual_Mom']).fillna(0)
         z_quality = (calc_zscore(df_metrics['ROA']).fillna(0) + calc_zscore(df_metrics['Margin']).fillna(0)) / 2
         z_value = (calc_zscore(df_metrics['FCF_Yield']).fillna(0) + (calc_zscore(df_metrics['PEG']).fillna(0) * -1)) / 2
@@ -276,7 +275,6 @@ if st.session_state['run_quant_engine']:
             num_assets = len(port_tickers)
             
             try:
-                # 🌟 Ledoit-Wolf Covariance Shrinkage 
                 lw = LedoitWolf()
                 lw.fit(port_returns)
                 shrunk_cov = lw.covariance_ * 252 
@@ -314,7 +312,6 @@ if st.session_state['run_quant_engine']:
                     portfolio_variance = np.dot(w.T, np.dot(shrunk_cov, w)) 
                     return -(expected_return - (dynamic_lambda / 2.0) * portfolio_variance - (0.5 * np.sum(w**2)) - (turnover_penalty * np.sum(np.abs(w - current_weights_arr))))
                     
-                # 🛠️ ขยาย Bounds ให้สมการมีทางออก (Max single weight 30%, Max Turnover 60%)
                 max_single_weight = 0.30 
                 bounds = tuple((0.0, max_single_weight) for _ in range(num_assets))
                 constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
@@ -341,7 +338,7 @@ if st.session_state['run_quant_engine']:
             port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
             port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
-        # 🛡️ Safety Net กรอง Sector ซ้ำอีกรอบ
+        # 🛡️ Safety Net
         target_sector_totals = port_df.groupby('Sector')['Target_%'].sum().reset_index()
         for _, row in target_sector_totals.iterrows():
             if row['Target_%'] > max_sector_cap * 100:
@@ -350,7 +347,7 @@ if st.session_state['run_quant_engine']:
                 port_df.loc[sec_mask, 'Target_%'] *= excess_ratio
         if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
 
-        # 🛑 RSI Mean Reversion Overlay (ไม่บล็อคมั่วแล้ว)
+        # 🛑 RSI Mean Reversion Overlay
         fomo_list = []
         for t in port_df['Ticker']:
             rsi_val = rsi_data.get(t, 50)
@@ -401,6 +398,23 @@ if st.session_state['run_quant_engine']:
         display_cols = ['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']
         st.dataframe(out[display_cols].sort_values(by='ซื้อ', ascending=False), use_container_width=True, hide_index=True)
         
+        # ==========================================
+        # 🏆 🌟 เรดาร์สแกนหุ้นจ่าฝูง (TOP ALPHA LEADERBOARD)
+        # ==========================================
+        st.markdown("---")
+        st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES (จ่าฝูง Alpha ประจำรอบ)")
+
+        top_alpha_display = final_df.head(10).copy() 
+        top_alpha_display['Sector'] = top_alpha_display['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
+        top_alpha_display['Alpha_Score'] = top_alpha_display['Alpha_Score'].round(2)
+        top_alpha_display['MDD'] = top_alpha_display['Max_Drawdown'].round(1).astype(str) + "%"
+        top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
+
+        display_top = top_alpha_display[['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(
+            columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}
+        )
+        st.dataframe(display_top, use_container_width=True, hide_index=True)
+
         buy_list = out[out['ซื้อ'] > 0].sort_values(by='ซื้อ', ascending=False)
         proposed_buys_json = buy_list[['หุ้น', 'ซื้อ', 'Thesis']].to_dict('records')
 
