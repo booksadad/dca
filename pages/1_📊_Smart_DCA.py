@@ -54,7 +54,7 @@ def enable_print():
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
 
-@st.cache_data(ttl=3600) # 🌟 Caching yfinance ป้องกันอืดและโดนแบน
+@st.cache_data(ttl=3600)
 def fetch_fundamental_data(tickers):
     metrics = []
     for t in tickers:
@@ -160,10 +160,8 @@ st.session_state['portfolio_holdings'] = df_holdings_edited
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
 current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
-# 🛠️ ซ่อมบั๊กงบประมาณหาย
 actual_budget = budget 
 
-# 🛠️ ซ่อมบั๊กปุ่มเด้ง
 if 'run_quant_engine' not in st.session_state: st.session_state['run_quant_engine'] = False
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"): st.session_state['run_quant_engine'] = True
 
@@ -248,16 +246,16 @@ if st.session_state['run_quant_engine']:
             sr_data[t] = find_sr_levels(series_clean)
             
         df_metrics = pd.merge(pd.DataFrame(metrics), df_fundamentals, on='Ticker')
-        for col in ['Residual_Mom', 'ROA', 'Margin', 'PEG', 'FCF_Yield']:
-            df_metrics[col] = df_metrics[col].fillna(df_metrics[col].median())
-            
-        # คำนวณ Alpha Score แบบ Dynamic Factor Weighting
-        z_mom = calc_zscore(df_metrics['Residual_Mom'])
-        z_quality = (calc_zscore(df_metrics['ROA']) + calc_zscore(df_metrics['Margin'])) / 2
-        z_value = (calc_zscore(df_metrics['FCF_Yield']) + (calc_zscore(df_metrics['PEG']) * -1)) / 2
+        
+        # 🛠️ ซ่อมบั๊ก NaN ป้องกันระบบล่มด้วยการเติม 0 (ค่าเฉลี่ย Z-Score) หลังคำนวณ
+        z_mom = calc_zscore(df_metrics['Residual_Mom']).fillna(0)
+        z_quality = (calc_zscore(df_metrics['ROA']).fillna(0) + calc_zscore(df_metrics['Margin']).fillna(0)) / 2
+        z_value = (calc_zscore(df_metrics['FCF_Yield']).fillna(0) + (calc_zscore(df_metrics['PEG']).fillna(0) * -1)) / 2
         
         df_metrics['Alpha_Score'] = (z_mom * w_mom) + (z_quality * w_quality) + (z_value * w_value)
+        df_metrics['Alpha_Score'] = df_metrics['Alpha_Score'].fillna(0) # กันเหนียวชั้นสุดท้าย
         df_metrics['Max_Drawdown'] = df_metrics['Ticker'].map(max_dd)
+        
         final_df = df_metrics.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
         
         port_df = final_df[final_df['Ticker'].isin(my_portfolio)].copy()
@@ -277,7 +275,6 @@ if st.session_state['run_quant_engine']:
             num_assets = len(port_tickers)
             
             try:
-                # 🌟 Ledoit-Wolf Covariance Shrinkage 
                 lw = LedoitWolf()
                 lw.fit(port_returns)
                 shrunk_cov = lw.covariance_ * 252 
@@ -291,10 +288,8 @@ if st.session_state['run_quant_engine']:
                 omega_diag = np.zeros(num_assets)
                 P = np.eye(num_assets) 
                 
-                # 🧮 Dynamic Views & Sigmoid Conviction
                 for i, t in enumerate(port_tickers):
                     alpha_score = port_df.loc[port_df['Ticker'] == t, 'Alpha_Score'].values[0]
-                    
                     conviction = sigmoid(alpha_score) 
                     signal_strength = (conviction * 0.25) - 0.10 
                     Q[i] = Pi[i] + signal_strength
@@ -317,17 +312,14 @@ if st.session_state['run_quant_engine']:
                     portfolio_variance = np.dot(w.T, np.dot(shrunk_cov, w)) 
                     return -(expected_return - (dynamic_lambda / 2.0) * portfolio_variance - (0.5 * np.sum(w**2)) - (turnover_penalty * np.sum(np.abs(w - current_weights_arr))))
                     
-                # 🌟 Optimizer Constraints ขั้นเทพ (Max weight + Sector Cap + Turnover Cap)
                 max_single_weight = 0.25 
                 bounds = tuple((0.0, max_single_weight) for _ in range(num_assets))
-                
                 constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
                 
-                # Hard Turnover Constraint (Max 30% shift per rebalance)
-                max_turnover_cap = 0.30 
+                # 🛠️ ขยายเพดาน Turnover เป็น 50% ป้องกันสมการล่มเวลาพอร์ตตั้งต้นเบี้ยวมากๆ
+                max_turnover_cap = 0.50 
                 constraints.append({'type': 'ineq', 'fun': lambda w: max_turnover_cap - np.sum(np.abs(w - current_weights_arr))})
                 
-                # Dynamic Sector Constraints
                 unique_sectors = port_df['Sector'].unique()
                 for sector in unique_sectors:
                     sec_indices = [i for i, t in enumerate(port_tickers) if port_df.loc[port_df['Ticker'] == t, 'Sector'].values[0] == sector]
@@ -347,19 +339,25 @@ if st.session_state['run_quant_engine']:
             port_df['Inv_Vol'] = port_df['Ticker'].map(1.0 / returns_1y.std())
             port_df['Target_%'] = (port_df['Inv_Vol'] / port_df['Inv_Vol'].sum()) * 100.0 if port_df['Inv_Vol'].sum() > 0 else 0.0
 
-        # 🛑 RSI Mean Reversion Overlay (Institutional Logic ไม่แบนมั่วซั่วแล้ว)
+        # 🛡️ Safety Net: บังคับคุม Sector อีกรอบกรณีสมการล่มแล้วเข้าโหมด Risk Parity
+        target_sector_totals = port_df.groupby('Sector')['Target_%'].sum().reset_index()
+        for _, row in target_sector_totals.iterrows():
+            if row['Target_%'] > max_sector_cap * 100:
+                sec_mask = port_df['Sector'] == row['Sector']
+                excess_ratio = (max_sector_cap * 100) / row['Target_%']
+                port_df.loc[sec_mask, 'Target_%'] *= excess_ratio
+        if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
+
+        # 🛑 RSI Mean Reversion Overlay
         fomo_list = []
         for t in port_df['Ticker']:
             rsi_val = rsi_data.get(t, 50)
             if rsi_val > 75:
-                # คำนวณ Penalty Factor: ยิ่ง RSI สูง ยิ่งโดนกดน้ำหนักลง (แต่ไม่เป็น 0)
                 penalty_factor = max(0.2, 1.0 - ((rsi_val - 75) / 25))
-                # นำ Penalty ไปคูณลดน้ำหนักเป้าหมาย
                 port_df.loc[port_df['Ticker'] == t, 'Target_%'] *= penalty_factor
                 fomo_list.append(f"{t} (ลดน้ำหนัก {(1 - penalty_factor)*100:.0f}%)")
         
         if fomo_list:
-            # Re-normalize ให้สัดส่วนรวมกลับมาเป็น 100%
             if port_df['Target_%'].sum() > 0: 
                 port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
             fomo_msg = f"📉 **Mean Reversion Overlay:** ตรวจพบหุ้น Overbought ทำการลดเป้าหมายเพื่อคุมความเสี่ยง แต่ไม่ขัดขา Momentum -> {', '.join(fomo_list)}"
@@ -395,7 +393,9 @@ if st.session_state['run_quant_engine']:
         for c in ['เป้า%', 'ทุนเดิม']: out[c] = out[c].round(2)
             
         st.markdown(f"### 📋 2. ตาราง Quant Allocation")
-        if fomo_msg: st.warning(fomo_msg)
+        try:
+            if fomo_msg: st.warning(fomo_msg)
+        except: pass
         display_cols = ['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']
         st.dataframe(out[display_cols].sort_values(by='ซื้อ', ascending=False), use_container_width=True, hide_index=True)
         
@@ -421,15 +421,17 @@ if st.session_state['run_quant_engine']:
                         generation_config={"response_mime_type": "application/json"}
                     )
                     
-                    sector_totals = port_df.groupby('Sector')['Current'].sum().reset_index()
-                    sector_exposure = [{"Sector": row['Sector'], "Weight_%": round((row['Current']/total_port_value)*100, 1) if total_port_value > 0 else 0} for _, row in sector_totals.iterrows()]
+                    # 🛠️ ซ่อมบั๊ก Audit: เปลี่ยนจากตรวจสัดส่วนพอร์ตเดิม มาเป็นตรวจพอร์ตเป้าหมาย (Target_%)
+                    target_sector_totals = port_df.groupby('Sector')['Target_%'].sum().reset_index()
+                    target_sector_exposure = [{"Sector": row['Sector'], "Weight_%": round(row['Target_%'], 1)} for _, row in target_sector_totals.iterrows()]
+                    
                     top_alpha = [{"Ticker": row['Ticker'], "Alpha_Score": round(row['Alpha_Score'], 2)} for _, row in final_df.head(5).iterrows()]
                     
                     port_state = {
                         "vix_level": round(vix_current, 1),
                         "market_regime": "PANIC" if is_panic else "NORMAL",
                         "proposed_buys": proposed_buys_json,
-                        "current_sector_exposure": sector_exposure,
+                        "target_sector_exposure": target_sector_exposure,
                         "top_alpha_candidates": top_alpha,
                         "constraints": f"Max Single Weight: 25%, Max Sector: {max_sector_cap*100}%"
                     }
@@ -478,7 +480,8 @@ if st.session_state['run_quant_engine']:
                         st.markdown("---")
                         st.markdown("#### ⚖️ ระบบประเมินผลชี้ขาด (Python Governance Layer)")
                         
-                        python_sector_violation = any(sec['Weight_%'] > (max_sector_cap*100) for sec in sector_exposure)
+                        # Python เช็กจาก Target Sector ตรงๆ เลย ไม่ต้องพึ่ง AI มโน
+                        python_sector_violation = any(sec['Weight_%'] > (max_sector_cap*100) for sec in target_sector_exposure)
                         confidence = pm_data.get("alpha_alignment_score", 0.0)
                         
                         if python_sector_violation:
