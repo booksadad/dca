@@ -404,7 +404,12 @@ if st.session_state['system_run']:
                     if not buy_txt: buy_txt = "- ไม่มีคำสั่งซื้อในรอบนี้ (ระบบสั่งพักกระสุน)"
                     current_port_str = ", ".join([f"{row['หุ้น']} ({row['ทุนเดิม']} บ.)" for _, row in out.iterrows() if row['ทุนเดิม'] > 0])
                     if not current_port_str: current_port_str = "พอร์ตว่างเปล่า"
-                    top_alpha_str = ", ".join(final_df['Ticker'].head(5).tolist())
+                    # 📡 รับแฟ้มข้อมูลจากเรดาร์ Scanner ถ้าไม่มีให้ใช้ข้อมูลเดิม
+                    try:
+                        alpha_df = pd.read_csv("alpha_radar.csv")
+                        top_alpha_str = ", ".join(alpha_df['Alpha_Tickers'].tolist())
+                    except:
+                        top_alpha_str = ", ".join(final_df['Ticker'].head(5).tolist())
 
                     board_container = st.container()
                     with board_container:
