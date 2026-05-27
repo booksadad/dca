@@ -1,56 +1,86 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from sklearn.preprocessing import StandardScaler
 try:
     from hmmlearn.hmm import GaussianHMM
 except ImportError:
-    pass # ดักไว้ก่อน เผื่อยังไม่ได้ลง hmmlearn
+    pass 
 
+# ==========================================
+# 1. ระบบตรวจจับสภาวะตลาด (Regime Detection)
+# ==========================================
 class MarketRegimeHMM:
     def __init__(self, n_states=2):
-        # เริ่มด้วย 2 States (BULL / PANIC) ตามที่เพื่อนแนะนำ เพื่อความเสถียรก่อน
         self.n_states = n_states
-        self.model = GaussianHMM(n_components=self.n_states, covariance_type="full", n_iter=100, random_state=42)
+        
+        # 🛡️ Priority 3: Regime Persistence Constraint
+        # init_params="stmc" แปลว่าให้โมเดลเรียนรู้ทุกอย่าง "ยกเว้น" Transition Matrix (t)
+        self.model = GaussianHMM(
+            n_components=self.n_states, 
+            covariance_type="full", 
+            n_iter=100, 
+            random_state=42,
+            init_params="smc" # เราจะตั้งค่า transmat_ (t) เอง
+        )
+        
+        # บังคับให้มีความเฉื่อย (Sticky Regime) 95% โอกาสที่พรุ่งนี้จะเป็น Regime เดิม
+        self.model.transmat_ = np.array([[0.95, 0.05], 
+                                         [0.05, 0.95]])
         
     def fetch_macro_features(self, period="5y"):
-        """
-        [Layer 3.1] Regime Input Features
-        ดึงข้อมูล Macro: VIX, Realized Volatility และ Yield Curve Proxy
-        """
-        # ดึง SPY (แทนตลาด), VIX (Fear Gauge), TNX (10Y Yield), FVX (5Y Yield แทน 2Y ขัดตาทัพใน Yahoo)
-        tickers = ["SPY", "^VIX", "^TNX", "^FVX"]
-        data = yf.download(tickers, period=period, group_by='ticker')
+        """ดึง Features ที่กระจายความเสี่ยง (Orthogonal) ตามสถาบันใช้"""
+        # เพิ่ม HYG (Junk Bonds) และ LQD (Investment Grade) เพื่อดู Credit Stress
+        tickers = ["SPY", "^VIX", "^TNX", "^FVX", "HYG", "LQD"]
+        data = yf.download(tickers, period=period, group_by='ticker', threads=True)
         
         df = pd.DataFrame()
-        # 1. VIX Level
         df['VIX'] = data['^VIX']['Close']
         
-        # 2. Realized Vol (20d) เทียบกับ Implied Vol (VIX)
         df['SPY_Ret'] = data['SPY']['Close'].pct_change()
         df['Realized_Vol'] = df['SPY_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
-        df['Vol_Premium'] = df['Realized_Vol'] - df['VIX'] # ถ้า Realized > Implied = Panic เริ่มแล้ว
+        df['Vol_Premium'] = df['Realized_Vol'] - df['VIX']
         
-        # 3. Yield Curve Proxy (10Y - 5Y)
         df['Yield_Curve'] = data['^TNX']['Close'] - data['^FVX']['Close']
+        
+        # 🛡️ New Feature: Credit Spread (HYG/LQD)
+        # ถ้านักลงทุนกลัว จะขาย HYG ไปซื้อ LQD ทำให้ Ratio นี้ดิ่งลง
+        df['Credit_Stress'] = data['HYG']['Close'] / data['LQD']['Close']
         
         return df.dropna()
 
-    def fit_and_predict_proba(self, df_features):
+    def expanding_fit_predict(self, df_features, min_train_days=252):
         """
-        [Layer 3.2] HMM Setup
-        Fit โมเดลแบบ Unsupervised เพื่อหาความน่าจะเป็นของแต่ละ Regime
+        🛡️ Priority 2: Expanding-window training
+        ป้องกัน Hindsight bias โดยสอนโมเดลถึงแค่เมื่อวาน แล้วทำนายวันนี้
         """
-        # เลือก Features ที่จะใช้เทรน
-        features = df_features[['VIX', 'Vol_Premium', 'Yield_Curve']].values
+        features = df_features[['VIX', 'Vol_Premium', 'Yield_Curve', 'Credit_Stress']].values
         
-        # 1. Fit Model (ควรทำเป็น Expanding Window ใน Production จริง)
-        self.model.fit(features)
+        # 🛡️ Priority 1: Standardize features
+        scaler = StandardScaler()
         
-        # 2. Predict Probabilities (P(State 0), P(State 1))
-        probs = self.model.predict_proba(features)
+        probs = np.zeros((len(features), self.n_states))
+        
+        # Initial Fit (ใช้เวลา 1 ปีแรกในการตั้งไข่โมเดล)
+        train_features = scaler.fit_transform(features[:min_train_days])
+        self.model.fit(train_features)
+        probs[:min_train_days] = self.model.predict_proba(train_features)
+        
+        # Expanding Window Loop (เดินหน้าทีละวัน)
+        for t in range(min_train_days, len(features)):
+            # ดึงข้อมูลตั้งแต่วันแรกจนถึง "เมื่อวาน" (t-1)
+            train_slice = features[:t]
+            scaled_train = scaler.fit_transform(train_slice) 
+            self.model.fit(scaled_train)
+            
+            # ดึงข้อมูล "วันนี้" (t) มา Predict
+            test_slice = features[t:t+1]
+            scaled_test = scaler.transform(test_slice) # ใช้ scaler ของอดีต
+            probs[t] = self.model.predict_proba(scaled_test)[0]
+            
         df_probs = pd.DataFrame(probs, index=df_features.index, columns=[f'State_{i}' for i in range(self.n_states)])
         
-        # จัดพจน์ให้ State ที่ VIX สูงกว่า = PANIC
+        # แปะป้ายว่า State ไหนคือ Panic (ดูที่ State ไหนค่าเฉลี่ย VIX สูงกว่า)
         vix_means = [df_features.loc[df_probs[f'State_{i}'] > 0.5, 'VIX'].mean() for i in range(self.n_states)]
         panic_state_idx = np.argmax(vix_means)
         bull_state_idx = 1 - panic_state_idx
@@ -63,33 +93,28 @@ class MarketRegimeHMM:
         return df_probs
 
     def apply_transition_smoothing(self, df_probs, alpha=0.25):
-        """
-        [Layer 3.3] Soft Weighting + Transition Smoothing
-        EMA Smooth ป้องกัน Weights กระโดดจาก Noise รายวัน
-        สมการ: P_smooth(t) = 0.25 * P_HMM(t) + 0.75 * P_smooth(t-1)
-        """
-        # ใช้ ewm (Exponential Weighted Math) ของ pandas จัดการให้เลย
-        df_smoothed = df_probs.ewm(alpha=alpha, adjust=False).mean()
-        return df_smoothed
+        """EMA Smooth เพื่อลด Whipsaw"""
+        return df_probs.ewm(alpha=alpha, adjust=False).mean()
 
-    def calculate_dynamic_weights(self, smoothed_probs):
-        """
-        แปลง Probability เป็น Factor Weights
-        Blend น้ำหนักแบบไร้รอยต่อ ไม่มี Hard Switch
-        """
-        # ตั้งค่าน้ำหนักพื้นฐาน (Base Weights)
-        # BULL: เร่ง Momentum / PANIC: หนีเข้า Quality
-        w_bull = {'Mom': 0.50, 'Qual': 0.30, 'Val': 0.20}
-        w_panic = {'Mom': 0.10, 'Qual': 0.60, 'Val': 0.30}
+# ==========================================
+# 2. ระบบจัดสรรน้ำหนัก (Factor Allocator)
+# ==========================================
+class DynamicFactorAllocator:
+    """
+    🛡️ Priority 4: Separate regime detection กับ factor weighting (Modularity)
+    """
+    def __init__(self):
+        # โครงสร้างนี้สามารถขยายเป็น 5 Regimes ได้ในอนาคตตามที่เพื่อนแนะนำ
+        self.w_bull = {'Mom': 0.50, 'Qual': 0.30, 'Val': 0.20}
+        self.w_panic = {'Mom': 0.10, 'Qual': 0.60, 'Val': 0.30}
         
-        # เอา Probability แถวสุดท้ายมาใช้ (ของวันล่าสุด)
+    def calculate_weights(self, smoothed_probs):
         latest_p_bull = smoothed_probs['P_BULL'].iloc[-1]
         latest_p_panic = smoothed_probs['P_PANIC'].iloc[-1]
         
-        # Blend Weights (Dot Product)
-        final_w_mom = (latest_p_bull * w_bull['Mom']) + (latest_p_panic * w_panic['Mom'])
-        final_w_qual = (latest_p_bull * w_bull['Qual']) + (latest_p_panic * w_panic['Qual'])
-        final_w_val = (latest_p_bull * w_bull['Val']) + (latest_p_panic * w_panic['Val'])
+        final_w_mom = (latest_p_bull * self.w_bull['Mom']) + (latest_p_panic * self.w_panic['Mom'])
+        final_w_qual = (latest_p_bull * self.w_bull['Qual']) + (latest_p_panic * self.w_panic['Qual'])
+        final_w_val = (latest_p_bull * self.w_bull['Val']) + (latest_p_panic * self.w_panic['Val'])
         
         return {
             'Mom': final_w_mom,
@@ -98,14 +123,3 @@ class MarketRegimeHMM:
             'P_BULL': latest_p_bull,
             'P_PANIC': latest_p_panic
         }
-
-# ==========================================
-# วิธีเรียกใช้งานในไฟล์หลัก (1_📊_Smart_DCA.py)
-# ==========================================
-# hmm_engine = MarketRegimeHMM(n_states=2)
-# df_macro = hmm_engine.fetch_macro_features()
-# raw_probs = hmm_engine.fit_and_predict_proba(df_macro)
-# smooth_probs = hmm_engine.apply_transition_smoothing(raw_probs, alpha=0.25)
-# current_regime_weights = hmm_engine.calculate_dynamic_weights(smooth_probs)
-#
-# ตอนนี้ current_regime_weights['Mom'] จะค่อยๆ สไลด์ขึ้นลงแบบเนียนตา ไม่กระโดดไปมา!
