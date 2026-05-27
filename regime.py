@@ -15,20 +15,38 @@ class MarketRegimeHMM:
         
     @staticmethod
     @st.cache_data(ttl=86400)
-    def fetch_macro_features(period="2y"): # ติดเทอร์โบจำกัดไว้ที่ 2y เพื่อตัดปัญหาโหลดดีเลย์ตอนเทสต์ระบบ
+    def fetch_macro_features(period="2y"): 
         tickers = ["SPY", "^VIX", "^TNX", "^FVX", "HYG", "LQD"]
-        data = yf.download(tickers, period=period, group_by='ticker', threads=True)
+        # 🛠️ THE FIX 1: โหลดแบบปกติ ไม่ใช้ group_by='ticker' เพื่อเลี่ยงบั๊กใน yfinance
+        data = yf.download(tickers, period=period, threads=True)
+        
+        # 🛠️ THE FIX 2: ดึงเฉพาะราคา Close ออกมาอย่างปลอดภัย
+        if isinstance(data.columns, pd.MultiIndex):
+            close_data = data['Close']
+        else:
+            close_data = data
+            
         df = pd.DataFrame()
-        df['VIX'] = data['^VIX']['Close']
-        df['SPY_Ret'] = data['SPY']['Close'].pct_change()
+        
+        # 🛠️ THE FIX 3: ใช้ ffill() อุดรอยรั่ววันหยุดตลาดพันธบัตร ป้องกัน dropna() ลบข้อมูลทิ้งทั้งตาราง
+        df['VIX'] = close_data['^VIX'].ffill()
+        df['SPY_Ret'] = close_data['SPY'].ffill().pct_change()
         df['Realized_Vol'] = df['SPY_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
         df['Vol_Premium'] = df['Realized_Vol'] - df['VIX']
-        df['Yield_Curve'] = data['^TNX']['Close'] - data['^FVX']['Close']
-        df['Credit_Stress'] = data['HYG']['Close'] / data['LQD']['Close']
+        df['Yield_Curve'] = close_data['^TNX'].ffill() - close_data['^FVX'].ffill()
+        df['Credit_Stress'] = close_data['HYG'].ffill() / close_data['LQD'].ffill()
+        
         return df.dropna()
 
     @st.cache_data(ttl=86400)
     def expanding_fit_predict(_self, df_features, min_train_days=126):
+        # 🛠️ THE FIX 4: ดักจับกรณีข้อมูลถูกลบจนเหลือน้อยเกินไป ป้องกัน ValueError (0 samples)
+        if len(df_features) < min_train_days + 10:
+            fallback = pd.DataFrame(index=df_features.index)
+            fallback['P_BULL'] = 0.5
+            fallback['P_PANIC'] = 0.5
+            return fallback
+
         features = df_features[['VIX', 'Vol_Premium', 'Yield_Curve', 'Credit_Stress']].values
         scaler = StandardScaler()
         probs = np.zeros((len(features), _self.n_states))
