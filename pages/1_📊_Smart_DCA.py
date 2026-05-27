@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import os, sys, json
 import warnings
+import requests # เพิ่ม requests สำหรับ LINE Notify
 
 # ==========================================
 # 🛠️ ทะลวงกำแพงโฟลเดอร์ (Bulletproof Path Resolver)
@@ -16,18 +17,13 @@ if root_dir not in sys.path:
 # 📥 รวมศูนย์ระบบ 4 LAYERS (The Great Assembly)
 # ==========================================
 try:
-    # Layer 1: Data Pipeline
     from data_pipeline import InstitutionalDataPipeline
-    # Layer 2: Factor Engineering & Scoring
     from factors import two_pass_zscore, calculate_alpha_decay, calculate_rsi, check_doi_risk, find_sr_levels
-    # Layer 3: Regime Detection (Macro HMM)
     from regime import MarketRegimeHMM, DynamicFactorAllocator
-    # Layer 4: Portfolio Optimization (Cost-Aware Black-Litterman)
     from optimizer import run_institutional_black_litterman
-    # AI Audit Layer
     from risk import run_institutional_audit
 except ModuleNotFoundError as e:
-    st.error(f"🚨 **ระบบหาไฟล์โมดูลไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดเช็คว่าสร้างไฟล์ `data_pipeline.py`, `factors.py`, `regime.py`, `optimizer.py` ไว้ครบถ้วนที่หน้าแรกของโปรเจกต์")
+    st.error(f"🚨 **ระบบหาไฟล์โมดูลไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดเช็คว่าสร้างไฟล์ `data_pipeline.py`, `factors.py`, `regime.py`, `optimizer.py` ไว้ครบถ้วน")
     st.stop()
 
 warnings.filterwarnings("ignore")
@@ -47,7 +43,7 @@ SECTOR_DB = {
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
 THESIS_DB = {"NVDA": "AI Infra Dominance", "JNJ": "Healthcare Titan", "TSLA": "EV & AI Robotics", "ENPH": "Solar Inverter Leader", "TXN": "Analog Chip Moat", "BRK-B": "Fortress Balance Sheet", "RKLB": "Space Infrastructure"} 
 
-# 💎 ฝังพอร์ตจริงเริ่มต้นจากแอป Dime!
+# 💎 ฝังพอร์ตจริงเริ่มต้น
 DEFAULT_PORTFOLIO = {
     "BRK-B": 1361.56,
     "NVDA": 1128.72,
@@ -100,7 +96,6 @@ if st.session_state.get('run_quant_engine', False):
     if not st.session_state.get('matrix_calculated', False):
         status_box = st.status("🔮 กำลังเดินเครื่องสถาปัตยกรรม 4 Layers...", expanded=True)
         
-        # 🟢 LAYER 1 & 3: เรียกใช้ระบบคัดกรองแบบกลุ่มสถาบัน
         market_proxy = [t for sublist in SECTOR_DB.values() for t in sublist]
         total_universe = list(set(my_portfolio + market_proxy))
         
@@ -108,22 +103,18 @@ if st.session_state.get('run_quant_engine', False):
         regime_engine = MarketRegimeHMM(n_states=2)
         factor_allocator = DynamicFactorAllocator()
         
-        # ดึงข้อมูล Macro และรันบอทวิเคราะห์พายุเศรษฐกิจ (Layer 3)
         status_box.update(label="📡 Layer 3: ดึงข้อมูล Macro และคำนวณ Expanding-Window HMM...")
         df_macro = regime_engine.fetch_macro_features()
         raw_probs = regime_engine.expanding_fit_predict(df_macro)
         smooth_probs = regime_engine.apply_transition_smoothing(raw_probs)
         regime_weights = factor_allocator.calculate_weights(smooth_probs)
         
-        # กรองจักรวาลหุ้นลดขยะ (Layer 1)
         status_box.update(label="🧼 Layer 1: ร่อนหุ้นขยะผ่าน ADV Floor & Price Floor และทำ Soft Clipping...")
         clean_universe = pipeline.filter_universe()
         final_scan_list = list(set(my_portfolio + clean_universe))
         
-        # โหลดราคาหุ้นที่สะอาดแล้วมาคำนวณ Factor (Layer 2)
         raw_prices = pipeline.fetch_bulk_market_data(final_scan_list)
         
-        # 🛠️ THE FIX 1: สกัดเอาเฉพาะราคาปิด (Close) เพื่อเลี่ยง TypeError
         close_dict = {}
         for t in final_scan_list:
             try:
@@ -136,7 +127,6 @@ if st.session_state.get('run_quant_engine', False):
         prices_df = pd.DataFrame(close_dict).ffill()
         prices_1y = prices_df.tail(252)
         
-        # 🛠️ THE FIX 2: ป้องกัน NameError ตกหล่น
         returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
@@ -158,9 +148,7 @@ if st.session_state.get('run_quant_engine', False):
                 s_t = prices_1y[t].dropna()
                 ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1 if len(s_t)>20 else 0.0
                 
-                # 🛠️ THE FIX 3: ปรับสูตรคำนวณผลตอบแทนตลาดสะสมให้ไม่เพี้ยน
                 mkt_ret_6m = (1 + spy_ret.tail(126)).prod() - 1 
-                
                 residual_mom = ret_6m - (beta * mkt_ret_6m)
             except: residual_mom = 0.0
             
@@ -173,7 +161,6 @@ if st.session_state.get('run_quant_engine', False):
         df_metrics = pd.merge(pd.DataFrame(metrics), df_clean_fundamentals, on='Ticker').fillna(0.0)
         df_metrics['Sector'] = df_metrics['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
         
-        # 🛠️ THE FIX 4: ระบบ Safe-mode Fallback ป้องกันคอลัมน์ PIT หายตัว
         col_roa = 'ROA_PIT' if 'ROA_PIT' in df_metrics.columns else 'ROA'
         col_margin = 'Margin_PIT' if 'Margin_PIT' in df_metrics.columns else 'Margin'
         col_fcf_yield = 'FCF_Yield_PIT' if 'FCF_Yield_PIT' in df_metrics.columns else 'FCF_Yield'
@@ -196,7 +183,6 @@ if st.session_state.get('run_quant_engine', False):
         port_df['Weight_%'] = (port_df['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
         current_weights_arr = (port_df['Current'] / total_port_value).fillna(0).values if total_port_value > 0 else np.zeros(len(port_df))
 
-        # 🏛️ LAYER 4: ประมวลผลด้วยโมเดลสถาบันใหญ่ Cost-Aware Black-Litterman
         status_box.update(label="🏛️ Layer 4: รันระบบจัดพอร์ตอัจฉริยะคำนวณต้นทุนธุรกรรมจริง...")
         if "Auto-Pilot" in engine_choice:
             opt_res, mu_bl = run_institutional_black_litterman(
@@ -232,7 +218,11 @@ if st.session_state.get('run_quant_engine', False):
         out['RSI'] = out['หุ้น'].map(rsi_data).apply(check_doi_risk)
         out['รับ/ต้าน'] = out['หุ้น'].map(sr_data)
         
+        # ==========================================
+        # 🛠️ THE FIX: เพิ่ม Risk-Adjusted Alpha ตาม Framework
+        # ==========================================
         top_alpha_display = final_df.head(10).copy() 
+        top_alpha_display['Risk_Adj_Alpha'] = (top_alpha_display['Alpha_Score'] / (top_alpha_display['Max_Drawdown'].abs() + 1e-9)).round(3)
         top_alpha_display['Alpha_Score'] = top_alpha_display['Alpha_Score'].round(2)
         top_alpha_display['MDD'] = top_alpha_display['Max_Drawdown'].round(1).astype(str) + "%"
         top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
@@ -256,9 +246,39 @@ if st.session_state.get('run_quant_engine', False):
     st.markdown("### 📋 2. ตาราง Quant Allocation (Cost-Aware)")
     st.dataframe(st.session_state['out_table'][['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
     
+    # ==========================================
+    # 🚨 SMART SWAP ALERT (ระบบแจ้งเตือนสับเปลี่ยนหุ้น)
+    # ==========================================
+    current_port_alphas = st.session_state['top_alpha_table'][st.session_state['top_alpha_table']['สถานะ'] == "💼 ถืออยู่"]
+    outside_alphas = st.session_state['top_alpha_table'][st.session_state['top_alpha_table']['สถานะ'] == "✨ เป้าหมายใหม่"]
+    
+    if not current_port_alphas.empty and not outside_alphas.empty:
+        worst_held = current_port_alphas.sort_values('Alpha_Score').iloc[0] 
+        best_new = outside_alphas.sort_values('Alpha_Score', ascending=False).iloc[0] 
+        alpha_diff = best_new['Alpha_Score'] - worst_held['Alpha_Score']
+        
+        # แจ้งเตือนเมื่อตัวใหม่เก่งกว่า 1.0 Z-Score
+        if alpha_diff >= 1.0:
+            st.error(f"""
+            🔔 **SMART ROTATION ALERT! (พบหุ้นแข็งแกร่งกว่า)**
+            ระบบแนะนำให้พิจารณาสับเปลี่ยน (Rotate) เพื่อเร่งผลตอบแทน และปรับปรุง Risk-adjusted Profile:
+            * 🟢 **เป้าหมายใหม่:** **{best_new['Ticker']}** (Alpha: {best_new['Alpha_Score']:.2f} | Risk-adj: {best_new['Risk_Adj_Alpha']:.3f})
+            * 🔴 **ตัวถ่วงพอร์ต:** **{worst_held['Ticker']}** (Alpha: {worst_held['Alpha_Score']:.2f} | Risk-adj: {worst_held['Risk_Adj_Alpha']:.3f})
+            * *หมายเหตุ: {best_new['Ticker']} แข็งแกร่งกว่าถึง +{alpha_diff:.2f} Score ในสภาวะตลาดปัจจุบัน*
+            """)
+            
+            # --- ก๊อปปี้ LINE Notify Token มาใส่ตรงนี้ได้เลย (ถ้าต้องการให้เด้งเข้ามือถือ) ---
+            LINE_TOKEN = "" # ใส่ Token ระหว่างเครื่องหมายคำพูด
+            if LINE_TOKEN:
+                try:
+                    message = f"\n🚨 Quant Alert!\nพิจารณาสับเปลี่ยนหุ้น:\n🟢 ซื้อ: {best_new['Ticker']} (Alpha {best_new['Alpha_Score']:.2f})\n🔴 ทิ้ง: {worst_held['Ticker']} (Alpha {worst_held['Alpha_Score']:.2f})"
+                    requests.post("https://notify-api.line.me/api/notify", headers={"Authorization": f"Bearer {LINE_TOKEN}"}, data={"message": message})
+                except: pass
+
     st.markdown("---")
     st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES (MAD Z-Score)")
-    st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
+    # แสดงคอลัมน์ Risk_Adj_Alpha ในตาราง
+    st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'Risk_Adj_Alpha', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'Risk_Adj_Alpha': 'Risk-adj Alpha', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
     if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
         api_key = st.secrets.get("GEMINI_API_KEY")
