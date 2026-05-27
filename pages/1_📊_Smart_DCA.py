@@ -111,7 +111,7 @@ if st.session_state.get('run_quant_engine', False):
         # ดึงข้อมูล Macro และรันบอทวิเคราะห์พายุเศรษฐกิจ (Layer 3)
         status_box.update(label="📡 Layer 3: ดึงข้อมูล Macro และคำนวณ Expanding-Window HMM...")
         df_macro = regime_engine.fetch_macro_features()
-        raw_probs = regime_engine.fit_and_predict_proba(df_macro)
+        raw_probs = regime_engine.expanding_fit_predict(df_macro))
         smooth_probs = regime_engine.apply_transition_smoothing(raw_probs)
         regime_weights = factor_allocator.calculate_weights(smooth_probs)
         
