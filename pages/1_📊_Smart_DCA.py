@@ -122,10 +122,20 @@ if st.session_state.get('run_quant_engine', False):
         final_scan_list = list(set(my_portfolio + clean_universe))
         
         # โหลดราคาหุ้นที่สะอาดแล้วมาคำนวณ Factor (Layer 2)
-        prices_df = pipeline.fetch_bulk_market_data(final_scan_list)
+        raw_prices = pipeline.fetch_bulk_market_data(final_scan_list)
+        
+        # 🛠️ THE FIX: สกัดเอาเฉพาะราคาปิด (Close) ออกมาจากก้อนข้อมูลดิบ
+        close_dict = {}
+        for t in final_scan_list:
+            try:
+                if isinstance(raw_prices.columns, pd.MultiIndex):
+                    close_dict[t] = raw_prices[t]['Close']
+                else:
+                    close_dict[t] = raw_prices['Close']
+            except: pass
+            
+        prices_df = pd.DataFrame(close_dict).ffill()
         prices_1y = prices_df.tail(252)
-        returns_1y = prices_1y.pct_change().fillna(0)
-        max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
         # จำลองตารางงบการเงินจำลอง (ดึงข้อมูลพื้นฐานขัดตาทัพแทน database)
         status_box.update(label="🧬 Layer 2: สกัดโมเมนตัมและคำนวณ Robust Two-pass MAD Z-Score...")
