@@ -246,37 +246,7 @@ if st.session_state.get('run_quant_engine', False):
     st.markdown("### 📋 2. ตาราง Quant Allocation (Cost-Aware)")
     st.dataframe(st.session_state['out_table'][['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
     
-    # ==========================================
-    # 🚨 SMART SWAP ALERT (ระบบแจ้งเตือนสับเปลี่ยนหุ้น)
-    # ==========================================
-    current_port_alphas = st.session_state['top_alpha_table'][st.session_state['top_alpha_table']['สถานะ'] == "💼 ถืออยู่"]
-    outside_alphas = st.session_state['top_alpha_table'][st.session_state['top_alpha_table']['สถานะ'] == "✨ เป้าหมายใหม่"]
-    
-    if not current_port_alphas.empty and not outside_alphas.empty:
-        worst_held = current_port_alphas.sort_values('Alpha_Score').iloc[0] 
-        best_new = outside_alphas.sort_values('Alpha_Score', ascending=False).iloc[0] 
-        alpha_diff = best_new['Alpha_Score'] - worst_held['Alpha_Score']
-        
-        # แจ้งเตือนเมื่อตัวใหม่เก่งกว่า 1.0 Z-Score
-        if alpha_diff >= 1.0:
-            st.error(f"""
-            🔔 **SMART ROTATION ALERT! (พบหุ้นแข็งแกร่งกว่า)**
-            ระบบแนะนำให้พิจารณาสับเปลี่ยน (Rotate) เพื่อเร่งผลตอบแทน และปรับปรุง Risk-adjusted Profile:
-            * 🟢 **เป้าหมายใหม่:** **{best_new['Ticker']}** (Alpha: {best_new['Alpha_Score']:.2f} | Risk-adj: {best_new['Risk_Adj_Alpha']:.3f})
-            * 🔴 **ตัวถ่วงพอร์ต:** **{worst_held['Ticker']}** (Alpha: {worst_held['Alpha_Score']:.2f} | Risk-adj: {worst_held['Risk_Adj_Alpha']:.3f})
-            * *หมายเหตุ: {best_new['Ticker']} แข็งแกร่งกว่าถึง +{alpha_diff:.2f} Score ในสภาวะตลาดปัจจุบัน*
-            """)
-            
-            # --- ก๊อปปี้ LINE Notify Token มาใส่ตรงนี้ได้เลย (ถ้าต้องการให้เด้งเข้ามือถือ) ---
-            LINE_TOKEN = "" # ใส่ Token ระหว่างเครื่องหมายคำพูด
-            if LINE_TOKEN:
-                try:
-                    message = f"\n🚨 Quant Alert!\nพิจารณาสับเปลี่ยนหุ้น:\n🟢 ซื้อ: {best_new['Ticker']} (Alpha {best_new['Alpha_Score']:.2f})\n🔴 ทิ้ง: {worst_held['Ticker']} (Alpha {worst_held['Alpha_Score']:.2f})"
-                    requests.post("https://notify-api.line.me/api/notify", headers={"Authorization": f"Bearer {LINE_TOKEN}"}, data={"message": message})
-                except: pass
-
-    st.markdown("---")
-    st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES (MAD Z-Score)")
+   
     # แสดงคอลัมน์ Risk_Adj_Alpha ในตาราง
     st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'Risk_Adj_Alpha', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'Risk_Adj_Alpha': 'Risk-adj Alpha', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
