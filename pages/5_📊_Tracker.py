@@ -3,20 +3,22 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
-import os
+from scipy.optimize import minimize
+from sklearn.covariance import LedoitWolf
 import warnings
+import os
 
 warnings.filterwarnings("ignore")
-
 PORTFOLIO_FILE = "my_portfolio_data.csv"
 
-st.set_page_config(page_title="QuantHQ Tracker", page_icon="📈", layout="wide")
-st.title("📈 QUANT-HQ: Strategy Lab & Portfolio Analytics")
-st.markdown("ระบบจำลองผลตอบแทนย้อนหลัง (Backtesting) และตรวจสอบมาตรวัดระดับสถาบัน")
+st.set_page_config(page_title="Walk-Forward Backtest", page_icon="🔬", layout="wide")
+st.title("🔬 QUANT-HQ: Walk-Forward Backtester")
+st.markdown("ระบบทดสอบย้อนหลังระดับสถาบัน **(No Lookahead Bias + Transaction Costs)**")
 st.markdown("---")
 
-# 1. โหลดข้อมูลพอร์ตปัจจุบัน
+# ==========================================
+# 1. โหลดรายชื่อหุ้นจากพอร์ตปัจจุบัน
+# ==========================================
 my_portfolio = []
 if os.path.exists(PORTFOLIO_FILE):
     try:
@@ -29,122 +31,156 @@ if not my_portfolio:
     st.warning("⚠️ ไม่พบหุ้นในพอร์ต โปรดไปตั้งค่าพอร์ตที่หน้า Smart DCA ก่อนครับ")
     st.stop()
 
-st.sidebar.markdown(f"**💼 หุ้นในพอร์ตปัจจุบัน:**\n{', '.join(my_portfolio)}")
+# ==========================================
+# 2. ตั้งค่า Parameters สำหรับ Backtest
+# ==========================================
+st.sidebar.markdown(f"**💼 หุ้นใน Universe:**\n{', '.join(my_portfolio)}")
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚙️ Backtest Parameters")
+lookback_years = st.sidebar.slider("ระยะเวลาทดสอบ (ปี)", 1, 5, 3)
+train_window = 252 # ใช้ข้อมูล 1 ปีฝึกโมเดล
+step_size = 21 # Rebalance ทุกๆ 1 เดือน (21 วันทำการ)
 
-# 2. ตั้งค่า Backtest
-col1, col2 = st.columns(2)
-with col1:
-    lookback_years = st.slider("🕰️ ระยะเวลาย้อนหลัง (ปี)", 1, 10, 3)
-with col2:
-    benchmark_ticker = st.selectbox("📊 ดัชนีเปรียบเทียบ (Benchmark)", ["VOO", "QQQ", "DIA"])
+st.sidebar.subheader("💸 Transaction Costs")
+broker_fee = st.sidebar.number_input("ค่าคอมมิชชัน (%)", 0.0, 1.0, 0.15) / 100
+slippage = st.sidebar.number_input("Slippage (%)", 0.0, 1.0, 0.10) / 100
+total_t_cost = broker_fee + slippage
 
-if st.button("🚀 รันระบบ Backtest & Analytics", type="primary"):
-    with st.spinner(f"⏳ กำลังดึงข้อมูลย้อนหลัง {lookback_years} ปี และจำลอง Equity Curve..."):
+if st.button("🚀 รันระบบ Walk-Forward Simulation", type="primary"):
+    with st.status("⏳ กำลังจำลองการเดินทางข้ามเวลา (Walk-Forward)...", expanded=True) as status:
         
-        # ดึงข้อมูลราคา
-        tickers_to_fetch = list(set(my_portfolio + [benchmark_ticker]))
-        data = yf.download(tickers_to_fetch, period=f"{lookback_years}y", progress=False)['Close']
-        data = data.dropna()
+        benchmark = "VOO"
+        tickers_to_fetch = list(set(my_portfolio + [benchmark]))
         
-        if data.empty:
-            st.error("❌ ดึงข้อมูลล้มเหลว หรือหุ้นบางตัวเพิ่งเข้าตลาดไม่ถึงเวลาที่กำหนด")
+        status.update(label="📡 กำลังดึงข้อมูล Time-Series ย้อนหลัง...")
+        data = yf.download(tickers_to_fetch, period=f"{lookback_years + 1}y", progress=False)['Close'].dropna()
+        
+        if len(data) < train_window + step_size:
+            st.error("❌ ข้อมูลย้อนหลังไม่พอสำหรับ Train Window (หุ้นบางตัวอาจเพิ่งเข้าตลาด)")
             st.stop()
 
-        # 3. คำนวณผลตอบแทนรายวัน (Daily Returns) แบบ Equal Weight
         daily_ret = data.pct_change().dropna()
+        voo_ret = daily_ret[benchmark]
+        port_ret = daily_ret[my_portfolio]
         
-        valid_port_tickers = [t for t in my_portfolio if t in daily_ret.columns]
-        port_weight = 1.0 / len(valid_port_tickers)
+        num_assets = len(my_portfolio)
+        current_weights = np.zeros(num_assets)
         
-        # สมมติฐานพอร์ต: Equal Weight Rebalance ทุกวัน
-        port_daily_ret = (daily_ret[valid_port_tickers] * port_weight).sum(axis=1)
-        bench_daily_ret = daily_ret[benchmark_ticker]
+        # เก็บผลลัพธ์
+        strategy_returns = []
+        bench_returns = []
+        dates = []
+        turnover_history = []
         
-        # คำนวณ Equity Curve (เส้นความมั่งคั่ง) เริ่มต้น 100
-        port_cum = (1 + port_daily_ret).cumprod() * 100
-        bench_cum = (1 + bench_daily_ret).cumprod() * 100
+        status.update(label=f"🧮 กำลังรัน Optimizer แบบกลิ้งไปข้างหน้า (Rolling Window)...")
         
-        # 4. คำนวณ Institutional Metrics
-        years = len(daily_ret) / 252
-        
-        def calc_metrics(daily_returns, cum_returns):
-            cagr = ((cum_returns.iloc[-1] / 100) ** (1 / years)) - 1
-            ann_vol = daily_returns.std() * np.sqrt(252)
-            sharpe = cagr / ann_vol if ann_vol > 0 else 0
+        # ------------------------------------------
+        # 🔄 THE WALK-FORWARD LOOP
+        # ------------------------------------------
+        for i in range(train_window, len(port_ret), step_size):
+            # 1. ข้อมูล Train (อดีต 252 วัน ณ จุดนั้น) -> ไม่มี Lookahead Bias
+            train_data = port_ret.iloc[i - train_window : i]
+            train_voo = voo_ret.iloc[i - train_window : i]
             
-            # Sortino Ratio (ลงโทษเฉพาะขาลง)
-            downside = daily_returns.copy()
-            downside[downside > 0] = 0
-            down_vol = downside.std() * np.sqrt(252)
-            sortino = cagr / down_vol if down_vol > 0 else 0
+            # 2. คำนวณสัญญาณ Alpha (Residual Momentum 6 เดือน)
+            mom_6m = (data[my_portfolio].iloc[i-1] / data[my_portfolio].iloc[i-126]) - 1
+            voo_mom_6m = (data[benchmark].iloc[i-1] / data[benchmark].iloc[i-126]) - 1
             
-            # Max Drawdown
-            roll_max = cum_returns.cummax()
-            drawdown = (cum_returns - roll_max) / roll_max
-            mdd = drawdown.min()
+            betas = []
+            for t in my_portfolio:
+                cov = np.cov(train_data[t], train_voo)[0][1]
+                var = np.var(train_voo)
+                betas.append(cov / var if var > 0 else 1.0)
             
-            return cagr*100, ann_vol*100, sharpe, sortino, mdd*100
+            residual_mom = mom_6m.values - (np.array(betas) * voo_mom_6m)
+            
+            # ปรับเป็น Z-Score เพื่อใช้เป็น Q (Expected Return)
+            if residual_mom.std() > 0: alpha_scores = (residual_mom - residual_mom.mean()) / residual_mom.std()
+            else: alpha_scores = np.zeros(num_assets)
+            
+            # 3. Ledoit-Wolf Covariance
+            lw = LedoitWolf()
+            lw.fit(train_data)
+            shrunk_cov = lw.covariance_ * 252
+            
+            # 4. Mean-Variance Optimization พร้อม Turnover Constraint
+            def objective(w):
+                port_ret_exp = np.sum(alpha_scores * w)
+                port_var = np.dot(w.T, np.dot(shrunk_cov, w))
+                # Maximize Return, Minimize Variance, Penalize Turnover
+                turnover_penalty = 0.05 * np.sum(np.abs(w - current_weights))
+                return -(port_ret_exp - (2.0 / 2.0) * port_var - turnover_penalty)
+            
+            bounds = tuple((0.0, 0.30) for _ in range(num_assets)) # Max weight 30%
+            constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
+            
+            try:
+                res = minimize(objective, [1/num_assets]*num_assets, method='SLSQP', bounds=bounds, constraints=constraints)
+                target_weights = res.x if res.success else current_weights
+            except:
+                target_weights = current_weights
+                
+            # 5. หักต้นทุนการเทรด (Transaction Cost)
+            turnover = np.sum(np.abs(target_weights - current_weights)) / 2.0 # หาร 2 เพราะ ซื้อ+ขาย คือ 1 ธุรกรรม
+            turnover_history.append(turnover)
+            cost_penalty = turnover * total_t_cost
+            
+            # 6. ข้อมูล Test (อนาคต 21 วัน ถัดไป)
+            end_idx = min(i + step_size, len(port_ret))
+            test_data = port_ret.iloc[i : end_idx]
+            test_voo = voo_ret.iloc[i : end_idx]
+            
+            # คำนวณผลตอบแทนพอร์ตในช่วง Test
+            step_returns = np.dot(test_data, target_weights)
+            
+            # หักค่าคอมฯ ออกจากวันแรกของการปรับพอร์ต
+            if len(step_returns) > 0:
+                step_returns[0] -= cost_penalty
+            
+            strategy_returns.extend(step_returns)
+            bench_returns.extend(test_voo.values)
+            dates.extend(test_data.index)
+            
+            # อัปเดตน้ำหนักสำหรับรอบถัดไป
+            current_weights = target_weights
 
-        port_cagr, port_vol, port_sharpe, port_sortino, port_mdd = calc_metrics(port_daily_ret, port_cum)
-        bench_cagr, bench_vol, bench_sharpe, bench_sortino, bench_mdd = calc_metrics(bench_daily_ret, bench_cum)
+        status.update(label="--- การจำลองเสร็จสิ้น ---", state="complete")
 
         # ==========================================
-        # 📊 แสดงผล (Visualizations)
+        # 📊 การคำนวณและแสดงผล (Analytics)
         # ==========================================
-        st.markdown(f"### 📈 เส้นโค้งความมั่งคั่ง (Equity Curve) เทียบ {benchmark_ticker}")
+        df_results = pd.DataFrame({'Strategy': strategy_returns, 'Benchmark': bench_returns}, index=dates)
         
-        df_plot = pd.DataFrame({'วันที่': port_cum.index, 'Quant Portfolio': port_cum.values, 'Benchmark': bench_cum.values})
-        fig_eq = px.line(df_plot, x='วันที่', y=['Quant Portfolio', 'Benchmark'], 
-                         color_discrete_sequence=['#00d4ff', '#ff4b4b'])
+        # คำนวณ Equity Curve (เริ่ม 100)
+        df_cum = (1 + df_results).cumprod() * 100
+        
+        st.markdown(f"### 📈 เส้นโค้งความมั่งคั่งที่แท้จริง (Real Equity Curve)")
+        fig_eq = px.line(df_cum, x=df_cum.index, y=['Strategy', 'Benchmark'], color_discrete_sequence=['#00d4ff', '#ff4b4b'])
         fig_eq.update_layout(yaxis_title="มูลค่าพอร์ต (เริ่ม 100)", legend_title="", height=400)
         st.plotly_chart(fig_eq, use_container_width=True)
         
+        # คำนวณ Metrics ระดับสถาบัน
+        years = len(df_results) / 252
+        
+        def calc_metrics(returns, cum_returns):
+            cagr = ((cum_returns.iloc[-1] / 100) ** (1 / years)) - 1
+            ann_vol = returns.std() * np.sqrt(252)
+            sharpe = cagr / ann_vol if ann_vol > 0 else 0
+            
+            roll_max = cum_returns.cummax()
+            mdd = ((cum_returns - roll_max) / roll_max).min()
+            return cagr*100, ann_vol*100, sharpe, mdd*100
+
+        s_cagr, s_vol, s_sharpe, s_mdd = calc_metrics(df_results['Strategy'], df_cum['Strategy'])
+        b_cagr, b_vol, b_sharpe, b_mdd = calc_metrics(df_results['Benchmark'], df_cum['Benchmark'])
+        avg_turnover = (np.mean(turnover_history) * 12) * 100 # Annualized Turnover
+
         st.markdown("### 🏆 สรุปมาตรวัดระดับสถาบัน (Institutional Metrics)")
-        
-        # สร้างตารางเปรียบเทียบ
         metrics_df = pd.DataFrame({
-            "Metric": ["CAGR (ผลตอบแทน/ปี)", "Volatility (ความผันผวน)", "Sharpe Ratio", "Sortino Ratio", "Max Drawdown (หลุมยุบ)"],
-            "Quant Portfolio": [f"{port_cagr:.2f}%", f"{port_vol:.2f}%", f"{port_sharpe:.2f}", f"{port_sortino:.2f}", f"{port_mdd:.2f}%"],
-            benchmark_ticker: [f"{bench_cagr:.2f}%", f"{bench_vol:.2f}%", f"{bench_sharpe:.2f}", f"{bench_sortino:.2f}", f"{bench_mdd:.2f}%"]
+            "Metric": ["CAGR (ผลตอบแทน/ปี)", "Volatility (ความผันผวน)", "Sharpe Ratio", "Max Drawdown", "Annual Turnover (อัตราหมุนเวียนพอร์ต)"],
+            "Quant Strategy": [f"{s_cagr:.2f}%", f"{s_vol:.2f}%", f"{s_sharpe:.2f}", f"{s_mdd:.2f}%", f"{avg_turnover:.1f}%"],
+            benchmark: [f"{b_cagr:.2f}%", f"{b_vol:.2f}%", f"{b_sharpe:.2f}", f"{b_mdd:.2f}%", "N/A"]
         })
-        
         st.dataframe(metrics_df, use_container_width=True, hide_index=True)
         
-        # ------------------------------------------
-        # ⚠️ DRAWDOWN MONITOR
-        # ------------------------------------------
-        st.markdown("---")
-        st.markdown("### 🕳️ แผนผังความเจ็บปวด (Drawdown Monitor)")
-        
-        port_roll_max = port_cum.cummax()
-        port_dd = (port_cum - port_roll_max) / port_roll_max * 100
-        
-        fig_dd = px.area(x=port_dd.index, y=port_dd.values, color_discrete_sequence=['#ff4b4b'])
-        fig_dd.update_layout(xaxis_title="วันที่", yaxis_title="Drawdown (%)", height=250, margin=dict(t=10, b=10))
-        st.plotly_chart(fig_dd, use_container_width=True)
-        
-        # ------------------------------------------
-        # 📡 RISK EXPOSURE ANALYSIS
-        # ------------------------------------------
-        st.markdown("### 📡 วิเคราะห์ความเสี่ยงรายตัว (Risk Exposure)")
-        
-        risk_data = []
-        for t in valid_port_tickers:
-            t_ret = daily_ret[t]
-            t_cum = (1 + t_ret).cumprod() * 100
-            t_cagr, t_vol, t_sharpe, _, t_mdd = calc_metrics(t_ret, t_cum)
-            
-            # คำนวณ Beta (ความแกว่งเทียบตลาด)
-            cov = np.cov(t_ret, bench_daily_ret)[0][1]
-            var = np.var(bench_daily_ret)
-            beta = cov / var if var > 0 else 1.0
-            
-            risk_data.append({
-                "หุ้น": t, "CAGR (%)": t_cagr, "Volatility (%)": t_vol, 
-                "Sharpe": t_sharpe, "Max Drawdown (%)": t_mdd, "Beta (vs Mkt)": beta
-            })
-            
-        # 🛠️ ปิดบั๊กตาราง: ตัด style.background_gradient ออก ใช้ตารางธรรมดาที่เสถียร 100%
-       # 🛠️ ปิดบั๊กตาราง: ใช้ตารางธรรมดาที่เสถียร 100% ไม่มี Error
-        df_risk = pd.DataFrame(risk_data).round(2)
-        st.dataframe(df_risk, use_container_width=True, hide_index=True)
+        st.info(f"💡 **Insights:** ระบบคำนวณหักต้นทุนค่าธรรมเนียมและ Slippage ไปทั้งหมดแล้ว นี่คือผลตอบแทนสุทธิ (Net Return) ที่ป้องกันการเกิด Lookahead Bias อย่างสมบูรณ์แบบ")
