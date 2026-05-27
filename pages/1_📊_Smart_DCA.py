@@ -158,7 +158,8 @@ if st.session_state.get('run_quant_engine', False):
                 
                 s_t = prices_1y[t].dropna()
                 ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1 if len(s_t)>20 else 0.0
-                mkt_ret_6m = (df_macro['SPY_Ret'].iloc[-1]/df_macro['SPY_Ret'].iloc[max(0, len(df_macro)-126)]) - 1
+                # แก้สมการตลาดให้ใช้ Cumulative Return (ทบต้น) แทนการหาร % แบบตรงๆ
+                mkt_ret_6m = (1 + spy_ret.tail(126)).prod() - 1
                 
                 residual_mom = ret_6m - (beta * mkt_ret_6m)
             except: residual_mom = 0.0
