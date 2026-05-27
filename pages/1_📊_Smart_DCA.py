@@ -124,7 +124,7 @@ if st.session_state.get('run_quant_engine', False):
         # โหลดราคาหุ้นที่สะอาดแล้วมาคำนวณ Factor (Layer 2)
         raw_prices = pipeline.fetch_bulk_market_data(final_scan_list)
         
-        # 🛠️ THE FIX: สกัดเอาเฉพาะราคาปิด (Close) ออกมาจากก้อนข้อมูลดิบ
+        # 🛠️ THE FIX 1: สกัดเอาเฉพาะราคาปิด (Close) ออกมาจากก้อนข้อมูลดิบเพื่อเลี่ยง TypeError
         close_dict = {}
         for t in final_scan_list:
             try:
@@ -136,6 +136,10 @@ if st.session_state.get('run_quant_engine', False):
             
         prices_df = pd.DataFrame(close_dict).ffill()
         prices_1y = prices_df.tail(252)
+        
+        # 🛠️ THE FIX 2: เติมตัวแปร 2 บรรทัดที่ตกหล่นกลับคืนมา เพื่อเลี่ยง NameError
+        returns_1y = prices_1y.pct_change().fillna(0)
+        max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
         # จำลองตารางงบการเงินจำลอง (ดึงข้อมูลพื้นฐานขัดตาทัพแทน database)
         status_box.update(label="🧬 Layer 2: สกัดโมเมนตัมและคำนวณ Robust Two-pass MAD Z-Score...")
@@ -158,8 +162,9 @@ if st.session_state.get('run_quant_engine', False):
                 
                 s_t = prices_1y[t].dropna()
                 ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1 if len(s_t)>20 else 0.0
-                # แก้สมการตลาดให้ใช้ Cumulative Return (ทบต้น) แทนการหาร % แบบตรงๆ
-                mkt_ret_6m = (1 + spy_ret.tail(126)).prod() - 1
+                
+                # 🛠️ THE FIX 3: แก้สมการตลาดให้ใช้ Cumulative Return ทบต้น เลี่ยงค่าเพี้ยน
+                mkt_ret_6m = (1 + spy_ret.tail(126)).prod() - 1 
                 
                 residual_mom = ret_6m - (beta * mkt_ret_6m)
             except: residual_mom = 0.0
@@ -173,10 +178,16 @@ if st.session_state.get('run_quant_engine', False):
         df_metrics = pd.merge(pd.DataFrame(metrics), df_clean_fundamentals, on='Ticker').fillna(0.0)
         df_metrics['Sector'] = df_metrics['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
         
+        # 🛠️ THE FIX 4: ระบบ Safe-mode Fallback เช็คชื่อคอลัมน์ PIT ก่อนคำนวณ เลี่ยง KeyError
+        col_roa = 'ROA_PIT' if 'ROA_PIT' in df_metrics.columns else 'ROA'
+        col_margin = 'Margin_PIT' if 'Margin_PIT' in df_metrics.columns else 'Margin'
+        col_fcf_yield = 'FCF_Yield_PIT' if 'FCF_Yield_PIT' in df_metrics.columns else 'FCF_Yield'
+        col_peg = 'PEG_PIT' if 'PEG_PIT' in df_metrics.columns else 'PEG'
+
         # 🧮 คำนวณคะแนน Alpha ผ่านสมการ Two-Pass Sector-Neutral MAD Z-Score
         z_mom = two_pass_zscore(df_metrics, 'Residual_Mom', 'Sector')
-        z_quality = (two_pass_zscore(df_metrics, 'ROA_PIT', 'Sector') + two_pass_zscore(df_metrics, 'Margin_PIT', 'Sector')) / 2
-        z_value = (two_pass_zscore(df_metrics, 'FCF_Yield_PIT', 'Sector') + (two_pass_zscore(df_metrics, 'PEG_PIT', 'Sector') * -1)) / 2
+        z_quality = (two_pass_zscore(df_metrics, col_roa, 'Sector') + two_pass_zscore(df_metrics, col_margin, 'Sector')) / 2
+        z_value = (two_pass_zscore(df_metrics, col_fcf_yield, 'Sector') + (two_pass_zscore(df_metrics, col_peg, 'Sector') * -1)) / 2
         
         # ถ่วงน้ำหนักคะแนนตามสภาวะตลาดจริงที่ HMM คำนวณได้แบบ Smooth
         w_m, w_q, w_v = regime_weights['Mom'], regime_weights['Qual'], regime_weights['Val']
@@ -252,26 +263,3 @@ if st.session_state.get('run_quant_engine', False):
     st.dataframe(st.session_state['out_table'][['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
     
     st.markdown("---")
-    st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES (MAD Z-Score)")
-    st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
-
-    # --- PHASE 3: AI Risk Audit ---
-    if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
-        api_key = st.secrets.get("GEMINI_API_KEY")
-        if not api_key: st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings > Secrets")
-        else:
-            with st.spinner("Analyzing Institutional Risk..."):
-                cro_data, pm_data = run_institutional_audit(api_key, st.session_state['p_state_json'])
-                col1, col2 = st.columns(2)
-                with col1: st.json(cro_data)
-                with col2: st.json(pm_data)
-                
-                conf = pm_data.get("alpha_alignment_score", 0.0)
-                t_exposure = st.session_state['target_sector_exposure']
-                
-                if any(sec['Weight_%'] > 30.5 for sec in t_exposure): 
-                    st.error(f"🔴 BLOCKED: {cro_data.get('audit_explanation')}")
-                elif conf > 0.5: 
-                    st.success(f"🟢 APPROVED: {pm_data.get('audit_explanation')}")
-                else: 
-                    st.warning(f"🟡 WARNING: {pm_data.get('audit_explanation')}")
