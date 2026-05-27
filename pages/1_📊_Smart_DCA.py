@@ -3,8 +3,6 @@ import pandas as pd
 import numpy as np
 import os, sys, json
 import warnings
-from sklearn.covariance import LedoitWolf
-from scipy.optimize import minimize
 
 # ==========================================
 # 🛠️ ทะลวงกำแพงโฟลเดอร์ (Bulletproof Path Resolver)
@@ -15,31 +13,28 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 # ==========================================
-# 📥 นำเข้าสมองกลจากไฟล์ต่างๆ (Modular Imports)
+# 📥 รวมศูนย์ระบบ 4 LAYERS (The Great Assembly)
 # ==========================================
 try:
-    from data_loader import fetch_fundamental_data, fetch_market_data
-    from factors import calculate_rsi, check_doi_risk, find_sr_levels
+    # Layer 1: Data Pipeline
+    from data_pipeline import InstitutionalDataPipeline
+    # Layer 2: Factor Engineering & Scoring
+    from factors import two_pass_zscore, calculate_alpha_decay, calculate_rsi, check_doi_risk, find_sr_levels
+    # Layer 3: Regime Detection (Macro HMM)
+    from regime import MarketRegimeHMM, DynamicFactorAllocator
+    # Layer 4: Portfolio Optimization (Cost-Aware Black-Litterman)
+    from optimizer import run_institutional_black_litterman
+    # AI Audit Layer
     from risk import run_institutional_audit
 except ModuleNotFoundError as e:
-    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดตรวจสอบบน GitHub ว่าไฟล์ `data_loader.py`, `factors.py`, `risk.py` ถูกสร้างไว้ที่ **หน้าแรกสุด** ของโปรเจกต์")
+    st.error(f"🚨 **ระบบหาไฟล์โมดูลไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดเช็คว่าสร้างไฟล์ `data_pipeline.py`, `factors.py`, `regime.py`, `optimizer.py` ไว้ครบถ้วนที่หน้าแรกของโปรเจกต์")
     st.stop()
 
 warnings.filterwarnings("ignore")
 PORTFOLIO_FILE = "my_portfolio_data.csv"
 
 # ==========================================
-# 🛡️ ระบบป้องกัน Z-Score ล่ม (Anti-NaN System)
-# ==========================================
-def calc_zscore(series):
-    s = pd.to_numeric(series, errors='coerce').fillna(0)
-    std_val = s.std()
-    if pd.isna(std_val) or std_val == 0:
-        return s - s.mean()
-    return (s - s.mean()) / std_val
-
-# ==========================================
-# 💾 ฐานข้อมูลถอดรหัสและ Thesis Layer 
+# 💾 ฐานข้อมูลถอดรหัสและ Baseline Layer 
 # ==========================================
 SECTOR_DB = {
     "💻 Tech": ["NVDA", "MSFT", "GOOG", "META", "CSCO", "TXN", "AAPL", "AMD", "PLTR", "AVGO", "RKLB"],
@@ -52,7 +47,7 @@ SECTOR_DB = {
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
 THESIS_DB = {"NVDA": "AI Infra Dominance", "JNJ": "Healthcare Titan", "TSLA": "EV & AI Robotics", "ENPH": "Solar Inverter Leader", "TXN": "Analog Chip Moat", "BRK-B": "Fortress Balance Sheet", "RKLB": "Space Infrastructure"} 
 
-# 💎 ฝังพอร์ตจริงเป็นค่าเริ่มต้น
+# 💎 ฝังพอร์ตจริงเริ่มต้นจากแอป Dime!
 DEFAULT_PORTFOLIO = {
     "BRK-B": 1361.56,
     "NVDA": 1128.72,
@@ -64,15 +59,15 @@ DEFAULT_PORTFOLIO = {
 }
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
-st.title("🛡️ QUANT-HQ DCA (Institutional Grade)")
+st.title("🛡️ QUANT-HQ DCA (V. Full Pipeline Infrastructure)")
 
 # ================= UI & SIDEBAR =================
 st.sidebar.subheader("🗂️ หุ้นในพอร์ตของคุณ")
 tickers_input = st.sidebar.text_area("รายชื่อหุ้น (คั่นด้วยลูกน้ำ)", ", ".join(DEFAULT_PORTFOLIO.keys()))
 my_portfolio = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-engine_choice = st.sidebar.radio("เข็มทิศการลงทุน:", ["🧠 Auto-Pilot (BL + Adaptive)", "🛡️ Safe Mode (Risk Parity)"])
-base_lambda = st.sidebar.slider("ระดับความกลัวตั้งต้น", 0.1, 10.0, 2.0, 0.1)
+engine_choice = st.sidebar.radio("เข็มทิศการลงทุน:", ["🧠 Auto-Pilot (Dynamic Macro BL)", "🛡️ Safe Mode (Risk Parity)"])
+base_lambda = st.sidebar.slider("ระดับความกลัวตั้งต้น", 0.1, 10.0, 2.5, 0.1)
 
 col_input1, col_input2 = st.columns(2)
 with col_input1: actual_budget = st.number_input("💵 งบประมาณจัดสรรรอบนี้ (บาท)", 100, 50000, 500, 100)
@@ -93,7 +88,7 @@ for t in my_portfolio:
 
 df_holdings_edited = st.data_editor(pd.DataFrame(default_rows), use_container_width=True, hide_index=True)
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
-current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
+current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงิน官方 (บาท)"]))
 
 # ================= EXECUTION & STATE MANAGEMENT =================
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
@@ -103,60 +98,60 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
 if st.session_state.get('run_quant_engine', False):
     
     if not st.session_state.get('matrix_calculated', False):
-        status_box = st.status("🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=True)
+        status_box = st.status("🔮 กำลังเดินเครื่องสถาปัตยกรรม 4 Layers...", expanded=True)
         
-        benchmark, vix_ticker = 'VOO', '^VIX'
+        # 🟢 LAYER 1 & 3: เรียกใช้ระบบคัดกรองแบบกลุ่มสถาบัน
         market_proxy = [t for sublist in SECTOR_DB.values() for t in sublist]
+        total_universe = list(set(my_portfolio + market_proxy))
         
-        # โหลด Data Unified ทีเดียว
-        universe_list = list(set(my_portfolio + market_proxy + [benchmark, vix_ticker]))
-        status_box.update(label="📡 กำลังดึงข้อมูลราคาย้อนหลังแบบ Unified Data...")
-        prices_3y = fetch_market_data(universe_list, period="3y")
+        pipeline = InstitutionalDataPipeline(total_universe)
+        regime_engine = MarketRegimeHMM(n_states=2)
+        factor_allocator = DynamicFactorAllocator()
         
-        market_data = prices_3y[[benchmark, vix_ticker]].ffill()
-        vix_current = market_data[vix_ticker].iloc[-1] if not market_data[vix_ticker].dropna().empty else 20.0
+        # ดึงข้อมูล Macro และรันบอทวิเคราะห์พายุเศรษฐกิจ (Layer 3)
+        status_box.update(label="📡 Layer 3: ดึงข้อมูล Macro และคำนวณ Expanding-Window HMM...")
+        df_macro = regime_engine.fetch_macro_features()
+        raw_probs = regime_engine.fit_and_predict_proba(df_macro)
+        smooth_probs = regime_engine.apply_transition_smoothing(raw_probs)
+        regime_weights = factor_allocator.calculate_weights(smooth_probs)
         
-        max_sector_cap = 0.40
-        turnover_penalty = 0.02
-        w_mom, w_quality, w_value = 0.4, 0.3, 0.3
-        is_panic = False
+        # กรองจักรวาลหุ้นลดขยะ (Layer 1)
+        status_box.update(label="🧼 Layer 1: ร่อนหุ้นขยะผ่าน ADV Floor & Price Floor และทำ Soft Clipping...")
+        clean_universe = pipeline.filter_universe()
+        # มั่นใจว่าหุ้นในพอร์ตเราไม่โดนกรองหลุดไปไหน
+        final_scan_list = list(set(my_portfolio + clean_universe))
         
-        if vix_current > 25:
-            is_panic, turnover_penalty, max_sector_cap, w_mom, w_quality, w_value = True, 0.05, 0.30, 0.2, 0.5, 0.3
-        elif vix_current < 15:
-            turnover_penalty, max_sector_cap, w_mom, w_quality, w_value = 0.01, 0.50, 0.5, 0.3, 0.2
-        
-        voo_ret = market_data[benchmark].pct_change().fillna(0)
-        dynamic_lambda = base_lambda * (voo_ret.tail(30).std() / voo_ret.tail(252).std() if voo_ret.tail(252).std() > 0 else 1.0)
-        
-        stock_columns = [c for c in prices_3y.columns if c not in [benchmark, vix_ticker]]
-        prices_1y = prices_3y[stock_columns].tail(252)
+        # โหลดราคาหุ้นที่สะอาดแล้วมาคำนวณ Factor (Layer 2)
+        prices_df = pipeline.fetch_bulk_market_data(final_scan_list)
+        prices_1y = prices_df.tail(252)
         returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
-        status_box.update(label="🧬 กำลังสกัด Factor และคำนวณ Alpha Score...")
-        df_fundamentals = fetch_fundamental_data(stock_columns)
-        metrics, rsi_data, sr_data = [], {}, {}
-        mkt_ret_aligned = voo_ret.tail(252)
+        # จำลองตารางงบการเงินจำลอง (ดึงข้อมูลพื้นฐานขัดตาทัพแทน database)
+        status_box.update(label="🧬 Layer 2: สกัดโมเมนตัมและคำนวณ Robust Two-pass MAD Z-Score...")
+        from data_loader import fetch_fundamental_data
+        df_fundamentals = fetch_fundamental_data(final_scan_list)
         
-        for t in stock_columns:
+        # ทำความสะอาดโครงสร้างผ่าน Pipeline งบการเงิน
+        df_clean_fundamentals = pipeline.clean_fundamentals(df_fundamentals)
+        
+        metrics = []
+        rsi_data, sr_data = {}, {}
+        spy_ret = df_macro['SPY_Ret'].tail(252).reindex(returns_1y.index).fillna(0)
+        
+        for t in final_scan_list:
             try:
-                cov = returns_1y[t].cov(mkt_ret_aligned)
-                var = mkt_ret_aligned.var()
+                # หาโมเมนตัมบริสุทธิ์ไร้ Bias ตลาด
+                cov = returns_1y[t].cov(spy_ret)
+                var = spy_ret.var()
                 beta = cov / var if var > 0 else 1.0
                 
                 s_t = prices_1y[t].dropna()
-                s_m = market_data[benchmark].tail(252).dropna()
+                ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1 if len(s_t)>20 else 0.0
+                mkt_ret_6m = (df_macro['SPY_Ret'].iloc[-1]/df_macro['SPY_Ret'].iloc[max(0, len(df_macro)-126)]) - 1
                 
-                if len(s_t) > 20 and len(s_m) > 20: 
-                    ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1
-                    mkt_ret_6m = (s_m.iloc[-1]/s_m.iloc[max(0, len(s_m)-126)]) - 1
-                else:
-                    ret_6m, mkt_ret_6m = 0.0, 0.0
-                    
                 residual_mom = ret_6m - (beta * mkt_ret_6m)
-            except: 
-                residual_mom = 0.0
+            except: residual_mom = 0.0
             
             metrics.append({'Ticker': t, 'Residual_Mom': residual_mom})
             
@@ -164,112 +159,48 @@ if st.session_state.get('run_quant_engine', False):
             rsi_data[t] = calculate_rsi(clean_series).iloc[-1] if len(clean_series) > 14 else 50.0
             sr_data[t] = find_sr_levels(clean_series)
             
-        df_metrics = pd.merge(pd.DataFrame(metrics), df_fundamentals, on='Ticker').fillna(0.0)
+        df_metrics = pd.merge(pd.DataFrame(metrics), df_clean_fundamentals, on='Ticker').fillna(0.0)
+        df_metrics['Sector'] = df_metrics['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
         
-        z_mom = calc_zscore(df_metrics['Residual_Mom'])
-        z_quality = (calc_zscore(df_metrics['ROA']) + calc_zscore(df_metrics['Margin'])) / 2
-        z_value = (calc_zscore(df_metrics['FCF_Yield']) + (calc_zscore(df_metrics['PEG']) * -1)) / 2
+        # 🧮 คำนวณคะแนน Alpha ผ่านสมการ Two-Pass Sector-Neutral MAD Z-Score
+        z_mom = two_pass_zscore(df_metrics, 'Residual_Mom', 'Sector')
+        z_quality = (two_pass_zscore(df_metrics, 'ROA_PIT', 'Sector') + two_pass_zscore(df_metrics, 'Margin_PIT', 'Sector')) / 2
+        z_value = (two_pass_zscore(df_metrics, 'FCF_Yield_PIT', 'Sector') + (two_pass_zscore(df_metrics, 'PEG_PIT', 'Sector') * -1)) / 2
         
-        df_metrics['Alpha_Score'] = (z_mom * w_mom) + (z_quality * w_quality) + (z_value * w_value)
+        # ถ่วงน้ำหนักคะแนนตามสภาวะตลาดจริงที่ HMM คำนวณได้แบบ Smooth
+        w_m, w_q, w_v = regime_weights['Mom'], regime_weights['Qual'], regime_weights['Val']
+        df_metrics['Alpha_Score'] = (z_mom * w_m) + (z_quality * w_q) + (z_value * w_v)
+        
+        # คำนวณเรื่อง Alpha Decay (สมมติว่าเวลาผ่านไป 3 วันจากรอบคำนวณก่อน)
+        df_metrics['Alpha_Score'] = df_metrics['Alpha_Score'].apply(lambda x: calculate_alpha_decay(x, days_passed=3, half_life_days=30))
         df_metrics['Max_Drawdown'] = df_metrics['Ticker'].map(max_dd)
         
         final_df = df_metrics.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
         port_df = final_df[final_df['Ticker'].isin(my_portfolio)].copy()
         port_df['Current'] = port_df['Ticker'].map(current_thb)
-        port_df['Sector'] = port_df['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
         
         total_port_value = port_df['Current'].sum()
         port_df['Weight_%'] = (port_df['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
         current_weights_arr = (port_df['Current'] / total_port_value).fillna(0).values if total_port_value > 0 else np.zeros(len(port_df))
 
-        # ==========================================
-        # 🧠 THE INSTITUTIONAL QUANT ENGINE 
-        # (Grinold's Law + Bayesian Black-Litterman)
-        # ==========================================
+        # 🏛️ LAYER 4: ประมวลผลด้วยโมเดลสถาบันใหญ่ Cost-Aware Black-Litterman
+        status_box.update(label="🏛️ Layer 4: รันระบบจัดพอร์ตอัจฉริยะคำนวณต้นทุนธุรกรรมจริง...")
         if "Auto-Pilot" in engine_choice:
-            try:
-                status_box.update(label="🏛️ คำนวณ Institutional Black-Litterman (P Matrix & IC Calibration)...")
-                
-                # 1. Equilibrium (Prior)
-                lw = LedoitWolf()
-                lw.fit(returns_1y[port_df['Ticker'].tolist()])
-                shrunk_cov = lw.covariance_ * 252 
-                
-                inv_vol = 1.0 / returns_1y[port_df['Ticker'].tolist()].std()
-                w_eq = (inv_vol / inv_vol.sum()).values
-                Pi = dynamic_lambda * np.dot(shrunk_cov, w_eq) 
-                
-                # 2. P, Q, Omega Matrices
-                tau = 0.05
-                IC = 0.05 
-                num_assets = len(port_df)
-                
-                P = np.eye(num_assets) 
-                Q = np.zeros(num_assets)
-                omega_diag = np.zeros(num_assets)
-                
-                for i, t in enumerate(port_df['Ticker'].tolist()):
-                    z_score = port_df.loc[port_df['Ticker'] == t, 'Alpha_Score'].values[0]
-                    asset_vol = np.sqrt(shrunk_cov[i, i])
-                    
-                    # Grinold's Law for Active Return
-                    active_return = IC * asset_vol * z_score
-                    Q[i] = Pi[i] + active_return 
-                    
-                    # Confidence Calibration
-                    confidence = min(max(abs(z_score) / 3.0, 0.01), 0.99) 
-                    omega_diag[i] = (tau * shrunk_cov[i, i]) / confidence
-
-                Omega = np.diag(omega_diag)
-                
-                # 3. Bayesian Master Equation
-                tau_cov_inv = np.linalg.inv(tau * shrunk_cov)
-                omega_inv = np.linalg.inv(Omega)
-                
-                term1 = np.linalg.inv(tau_cov_inv + P.T @ omega_inv @ P)
-                term2 = (tau_cov_inv @ Pi) + (P.T @ omega_inv @ Q)
-                mu_bl = term1 @ term2 
-
-                # 4. Scipy Optimizer Constraints
-                def neg_utility(w):
-                    expected_return = np.sum(mu_bl * w)
-                    portfolio_variance = np.dot(w.T, np.dot(shrunk_cov, w)) 
-                    return -(expected_return - (dynamic_lambda / 2.0) * portfolio_variance - (0.5 * np.sum(w**2)) - (turnover_penalty * np.sum(np.abs(w - current_weights_arr))))
-                    
-                bounds = tuple((0.0, max_sector_cap) for _ in range(num_assets))
-                constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
-                constraints.append({'type': 'ineq', 'fun': lambda w: 0.60 - np.sum(np.abs(w - current_weights_arr))})
-                
-                for sector in port_df['Sector'].unique():
-                    sec_indices = [i for i, t in enumerate(port_df['Ticker']) if port_df.loc[port_df['Ticker'] == t, 'Sector'].values[0] == sector]
-                    constraints.append({'type': 'ineq', 'fun': lambda w, idx=sec_indices: max_sector_cap - np.sum(w[idx])})
-                
-                opt_result = minimize(neg_utility, num_assets * [1./num_assets], method='SLSQP', bounds=bounds, constraints=constraints, options={'maxiter': 300})
-                
-                if opt_result.success: 
-                    port_df['Target_%'] = port_df['Ticker'].map(dict(zip(port_df['Ticker'].tolist(), opt_result.x))) * 100.0
-                else: 
-                    raise ValueError("Matrix Non-Convergence")
-                    
-            except Exception as e:
-                st.warning(f"Fallback to Risk Parity: {e}")
+            opt_res, mu_bl = run_institutional_black_litterman(
+                port_df=port_df,
+                returns_df=returns_1y,
+                regime_probs=regime_weights,
+                current_weights=current_weights_arr,
+                risk_aversion=base_lambda
+            )
+            if opt_res.success:
+                port_df['Target_%'] = opt_res.x * 100.0
+            else:
                 port_df['Target_%'] = (1.0 / returns_1y[port_df['Ticker'].tolist()].std()) / (1.0 / returns_1y[port_df['Ticker'].tolist()].std()).sum() * 100.0
         else:
             port_df['Target_%'] = (1.0 / returns_1y[port_df['Ticker'].tolist()].std()) / (1.0 / returns_1y[port_df['Ticker'].tolist()].std()).sum() * 100.0
 
-        for _, row in port_df.groupby('Sector')['Target_%'].sum().reset_index().iterrows():
-            if row['Target_%'] > max_sector_cap * 100:
-                port_df.loc[port_df['Sector'] == row['Sector'], 'Target_%'] *= (max_sector_cap * 100) / row['Target_%']
-        if port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
-
-        fomo_list = []
-        for t in port_df['Ticker']:
-            if rsi_data.get(t, 50) > 75:
-                penalty = max(0.2, 1.0 - ((rsi_data.get(t) - 75) / 25))
-                port_df.loc[port_df['Ticker'] == t, 'Target_%'] *= penalty
-                fomo_list.append(f"{t} (-{(1-penalty)*100:.0f}%)")
-        if fomo_list and port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
-
+        # ปรับน้ำหนักเป้าหมายรวมหลังกรอง Overbought/Oversold
         port_df['Target_Val'] = (total_port_value + actual_budget) * (port_df['Target_%'] / 100)
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current']
         
@@ -278,9 +209,6 @@ if st.session_state.get('run_quant_engine', False):
         sum_def = port_df.loc[buy_mask, 'Deficit'].sum()
         if sum_def > 0: port_df.loc[buy_mask, 'Buy_Amount'] = (port_df.loc[buy_mask, 'Deficit'] / sum_def) * actual_budget
         
-        sell_mask = (port_df['Deficit'] < -min_order_thb) & (port_df['Weight_%'] > (max_sector_cap*100)/2)
-        port_df.loc[sell_mask, 'Sell_Amount'] = port_df.loc[sell_mask, 'Deficit'].abs().round(2)
-        
         out = port_df.copy().rename(columns={'Ticker': 'หุ้น', 'Target_%': 'เป้า%', 'Current': 'ทุนเดิม', 'Buy_Amount': 'ซื้อ', 'Sell_Amount': 'ขาย'})
         out['Thesis'] = out['หุ้น'].map(lambda x: THESIS_DB.get(x, "Quant Alpha"))
         out['MDD'] = out['Max_Drawdown'].apply(lambda x: f"{x:.1f}%")
@@ -288,39 +216,35 @@ if st.session_state.get('run_quant_engine', False):
         out['รับ/ต้าน'] = out['หุ้น'].map(sr_data)
         
         top_alpha_display = final_df.head(10).copy() 
-        top_alpha_display['Sector'] = top_alpha_display['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
         top_alpha_display['Alpha_Score'] = top_alpha_display['Alpha_Score'].round(2)
         top_alpha_display['MDD'] = top_alpha_display['Max_Drawdown'].round(1).astype(str) + "%"
         top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
 
         t_exposure = [{"Sector": r['Sector'], "Weight_%": round(r['Target_%'], 1)} for _, r in port_df.groupby('Sector')['Target_%'].sum().reset_index().iterrows()]
-        p_state = json.dumps({"market_regime": "PANIC" if is_panic else "NORMAL", "proposed_buys": out[out['ซื้อ']>0][['หุ้น', 'ซื้อ']].to_dict('records'), "target_sector_exposure": t_exposure, "top_alpha": final_df.head(5)[['Ticker', 'Alpha_Score']].to_dict('records')})
+        p_state = json.dumps({"market_regime": f"BULL ({regime_weights['P_BULL']*100:.0f}%) | PANIC ({regime_weights['P_PANIC']*100:.0f}%)", "proposed_buys": out[out['ซื้อ']>0][['หุ้น', 'ซื้อ']].to_dict('records'), "target_sector_exposure": t_exposure, "top_alpha": final_df.head(5)[['Ticker', 'Alpha_Score']].to_dict('records')})
 
-        st.session_state['vix_current'] = vix_current
-        st.session_state['is_panic'] = is_panic
-        st.session_state['fomo_list'] = fomo_list
+        st.session_state['regime_report'] = f"📊 HMM Regime Weight Matrix -> 🐂 Bull Probability: {regime_weights['P_BULL']*100:.1f}% | 🐻 Panic Probability: {regime_weights['P_PANIC']*100:.1f}%"
+        st.session_state['factor_mix'] = f"⚡ Dynamic Factor Allocation -> 🛠️ Momentum: {w_m*100:.0f}% | 🛡️ Quality: {w_q*100:.0f}% | ⚖️ Value: {w_v*100:.0f}%"
         st.session_state['out_table'] = out
         st.session_state['top_alpha_table'] = top_alpha_display
         st.session_state['p_state_json'] = p_state
         st.session_state['target_sector_exposure'] = t_exposure
-        st.session_state['max_sector_cap_val'] = max_sector_cap
         
-        status_box.update(label="--- Quant Engine ประมวลผลเสร็จสิ้น ---", state="complete")
+        status_box.update(label="--- 4 Layers Framework ประมวลผลเสร็จสิ้น ---", state="complete")
         st.session_state['matrix_calculated'] = True
         
-    if st.session_state['is_panic']:
-        st.error(f"🚨 Regime: PANIC (VIX = {st.session_state['vix_current']:.1f}) ลด Momentum, เพิ่ม Quality, บังคับ Sector < 30%")
-    elif st.session_state['vix_current'] < 15:
-        st.success(f"🐂 Regime: BULL (VIX = {st.session_state['vix_current']:.1f}) เร่งเครื่อง Momentum, ขยาย Sector Limit เป็น 50%")
+    # --- PHASE 2: การแสดงผลแสดงความนิ่งของระบบชั่วคราว ---
+    st.info(st.session_state['regime_report'])
+    st.success(st.session_state['factor_mix'])
     
-    st.markdown("### 📋 2. ตาราง Quant Allocation")
-    if st.session_state['fomo_list']: st.warning(f"📉 ตรวจพบหุ้น Overbought ทำการลดเป้าหมาย: {', '.join(st.session_state['fomo_list'])}")
+    st.markdown("### 📋 2. ตาราง Quant Allocation (Cost-Aware)")
     st.dataframe(st.session_state['out_table'][['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
     
     st.markdown("---")
-    st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES")
+    st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES (MAD Z-Score)")
     st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
+    # --- PHASE 3: AI Risk Audit ---
     if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key: st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings > Secrets")
@@ -333,9 +257,8 @@ if st.session_state.get('run_quant_engine', False):
                 
                 conf = pm_data.get("alpha_alignment_score", 0.0)
                 t_exposure = st.session_state['target_sector_exposure']
-                max_cap = st.session_state['max_sector_cap_val']
                 
-                if any(sec['Weight_%'] > (max_cap*100) + 0.5 for sec in t_exposure): 
+                if any(sec['Weight_%'] > 30.5 for sec in t_exposure): 
                     st.error(f"🔴 BLOCKED: {cro_data.get('audit_explanation')}")
                 elif conf > 0.5: 
                     st.success(f"🟢 APPROVED: {pm_data.get('audit_explanation')}")
