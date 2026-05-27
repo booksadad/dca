@@ -88,7 +88,7 @@ for t in my_portfolio:
 
 df_holdings_edited = st.data_editor(pd.DataFrame(default_rows), use_container_width=True, hide_index=True)
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
-current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงิน官方 (บาท)"]))
+current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
 # ================= EXECUTION & STATE MANAGEMENT =================
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
