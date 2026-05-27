@@ -263,3 +263,26 @@ if st.session_state.get('run_quant_engine', False):
     st.dataframe(st.session_state['out_table'][['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
     
     st.markdown("---")
+    st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES (MAD Z-Score)")
+    st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
+
+    # --- PHASE 3: AI Risk Audit ---
+    if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
+        api_key = st.secrets.get("GEMINI_API_KEY")
+        if not api_key: st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings > Secrets")
+        else:
+            with st.spinner("Analyzing Institutional Risk..."):
+                cro_data, pm_data = run_institutional_audit(api_key, st.session_state['p_state_json'])
+                col1, col2 = st.columns(2)
+                with col1: st.json(cro_data)
+                with col2: st.json(pm_data)
+                
+                conf = pm_data.get("alpha_alignment_score", 0.0)
+                t_exposure = st.session_state['target_sector_exposure']
+                
+                if any(sec['Weight_%'] > 30.5 for sec in t_exposure): 
+                    st.error(f"🔴 BLOCKED: {cro_data.get('audit_explanation')}")
+                elif conf > 0.5: 
+                    st.success(f"🟢 APPROVED: {pm_data.get('audit_explanation')}")
+                else: 
+                    st.warning(f"🟡 WARNING: {pm_data.get('audit_explanation')}")
