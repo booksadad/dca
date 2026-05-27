@@ -118,13 +118,12 @@ if st.session_state.get('run_quant_engine', False):
         # กรองจักรวาลหุ้นลดขยะ (Layer 1)
         status_box.update(label="🧼 Layer 1: ร่อนหุ้นขยะผ่าน ADV Floor & Price Floor และทำ Soft Clipping...")
         clean_universe = pipeline.filter_universe()
-        # มั่นใจว่าหุ้นในพอร์ตเราไม่โดนกรองหลุดไปไหน
         final_scan_list = list(set(my_portfolio + clean_universe))
         
         # โหลดราคาหุ้นที่สะอาดแล้วมาคำนวณ Factor (Layer 2)
         raw_prices = pipeline.fetch_bulk_market_data(final_scan_list)
         
-        # 🛠️ THE FIX 1: สกัดเอาเฉพาะราคาปิด (Close) ออกมาจากก้อนข้อมูลดิบเพื่อเลี่ยง TypeError
+        # 🛠️ THE FIX 1: สกัดเอาเฉพาะราคาปิด (Close) เพื่อเลี่ยง TypeError
         close_dict = {}
         for t in final_scan_list:
             try:
@@ -137,16 +136,13 @@ if st.session_state.get('run_quant_engine', False):
         prices_df = pd.DataFrame(close_dict).ffill()
         prices_1y = prices_df.tail(252)
         
-        # 🛠️ THE FIX 2: เติมตัวแปร 2 บรรทัดที่ตกหล่นกลับคืนมา เพื่อเลี่ยง NameError
+        # 🛠️ THE FIX 2: ป้องกัน NameError ตกหล่น
         returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
-        # จำลองตารางงบการเงินจำลอง (ดึงข้อมูลพื้นฐานขัดตาทัพแทน database)
         status_box.update(label="🧬 Layer 2: สกัดโมเมนตัมและคำนวณ Robust Two-pass MAD Z-Score...")
         from data_loader import fetch_fundamental_data
         df_fundamentals = fetch_fundamental_data(final_scan_list)
-        
-        # ทำความสะอาดโครงสร้างผ่าน Pipeline งบการเงิน
         df_clean_fundamentals = pipeline.clean_fundamentals(df_fundamentals)
         
         metrics = []
@@ -155,7 +151,6 @@ if st.session_state.get('run_quant_engine', False):
         
         for t in final_scan_list:
             try:
-                # หาโมเมนตัมบริสุทธิ์ไร้ Bias ตลาด
                 cov = returns_1y[t].cov(spy_ret)
                 var = spy_ret.var()
                 beta = cov / var if var > 0 else 1.0
@@ -163,7 +158,7 @@ if st.session_state.get('run_quant_engine', False):
                 s_t = prices_1y[t].dropna()
                 ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1 if len(s_t)>20 else 0.0
                 
-                # 🛠️ THE FIX 3: แก้สมการตลาดให้ใช้ Cumulative Return ทบต้น เลี่ยงค่าเพี้ยน
+                # 🛠️ THE FIX 3: ปรับสูตรคำนวณผลตอบแทนตลาดสะสมให้ไม่เพี้ยน
                 mkt_ret_6m = (1 + spy_ret.tail(126)).prod() - 1 
                 
                 residual_mom = ret_6m - (beta * mkt_ret_6m)
@@ -178,22 +173,18 @@ if st.session_state.get('run_quant_engine', False):
         df_metrics = pd.merge(pd.DataFrame(metrics), df_clean_fundamentals, on='Ticker').fillna(0.0)
         df_metrics['Sector'] = df_metrics['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
         
-        # 🛠️ THE FIX 4: ระบบ Safe-mode Fallback เช็คชื่อคอลัมน์ PIT ก่อนคำนวณ เลี่ยง KeyError
+        # 🛠️ THE FIX 4: ระบบ Safe-mode Fallback ป้องกันคอลัมน์ PIT หายตัว
         col_roa = 'ROA_PIT' if 'ROA_PIT' in df_metrics.columns else 'ROA'
         col_margin = 'Margin_PIT' if 'Margin_PIT' in df_metrics.columns else 'Margin'
         col_fcf_yield = 'FCF_Yield_PIT' if 'FCF_Yield_PIT' in df_metrics.columns else 'FCF_Yield'
         col_peg = 'PEG_PIT' if 'PEG_PIT' in df_metrics.columns else 'PEG'
 
-        # 🧮 คำนวณคะแนน Alpha ผ่านสมการ Two-Pass Sector-Neutral MAD Z-Score
         z_mom = two_pass_zscore(df_metrics, 'Residual_Mom', 'Sector')
         z_quality = (two_pass_zscore(df_metrics, col_roa, 'Sector') + two_pass_zscore(df_metrics, col_margin, 'Sector')) / 2
         z_value = (two_pass_zscore(df_metrics, col_fcf_yield, 'Sector') + (two_pass_zscore(df_metrics, col_peg, 'Sector') * -1)) / 2
         
-        # ถ่วงน้ำหนักคะแนนตามสภาวะตลาดจริงที่ HMM คำนวณได้แบบ Smooth
         w_m, w_q, w_v = regime_weights['Mom'], regime_weights['Qual'], regime_weights['Val']
         df_metrics['Alpha_Score'] = (z_mom * w_m) + (z_quality * w_q) + (z_value * w_v)
-        
-        # คำนวณเรื่อง Alpha Decay (สมมติว่าเวลาผ่านไป 3 วันจากรอบคำนวณก่อน)
         df_metrics['Alpha_Score'] = df_metrics['Alpha_Score'].apply(lambda x: calculate_alpha_decay(x, days_passed=3, half_life_days=30))
         df_metrics['Max_Drawdown'] = df_metrics['Ticker'].map(max_dd)
         
@@ -216,13 +207,17 @@ if st.session_state.get('run_quant_engine', False):
                 risk_aversion=base_lambda
             )
             if opt_res.success:
-                port_df['Target_%'] = opt_res.x * 100.0
+                port_df['Target_%'] = port_df['Ticker'].map(dict(zip(port_df['Ticker'].tolist(), opt_res.x))) * 100.0
             else:
-                port_df['Target_%'] = (1.0 / returns_1y[port_df['Ticker'].tolist()].std()) / (1.0 / returns_1y[port_df['Ticker'].tolist()].std()).sum() * 100.0
+                st.warning("⚠️ Constraints พอร์ตตึงเกินไป -> สลับเข้าแผนจัดน้ำหนักแบบ Risk Parity อัตโนมัติ")
+                rp_w = 1.0 / (returns_1y[port_df['Ticker'].tolist()].std() + 1e-9)
+                rp_target = (rp_w / rp_w.sum()) * 100.0
+                port_df['Target_%'] = port_df['Ticker'].map(rp_target.to_dict())
         else:
-            port_df['Target_%'] = (1.0 / returns_1y[port_df['Ticker'].tolist()].std()) / (1.0 / returns_1y[port_df['Ticker'].tolist()].std()).sum() * 100.0
+            rp_w = 1.0 / (returns_1y[port_df['Ticker'].tolist()].std() + 1e-9)
+            rp_target = (rp_w / rp_w.sum()) * 100.0
+            port_df['Target_%'] = port_df['Ticker'].map(rp_target.to_dict())
 
-        # ปรับน้ำหนักเป้าหมายรวมหลังกรอง Overbought/Oversold
         port_df['Target_Val'] = (total_port_value + actual_budget) * (port_df['Target_%'] / 100)
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current']
         
@@ -255,7 +250,6 @@ if st.session_state.get('run_quant_engine', False):
         status_box.update(label="--- 4 Layers Framework ประมวลผลเสร็จสิ้น ---", state="complete")
         st.session_state['matrix_calculated'] = True
         
-    # --- PHASE 2: การแสดงผลแสดงความนิ่งของระบบชั่วคราว ---
     st.info(st.session_state['regime_report'])
     st.success(st.session_state['factor_mix'])
     
@@ -266,7 +260,6 @@ if st.session_state.get('run_quant_engine', False):
     st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES (MAD Z-Score)")
     st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
-    # --- PHASE 3: AI Risk Audit ---
     if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key: st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings > Secrets")
@@ -280,7 +273,7 @@ if st.session_state.get('run_quant_engine', False):
                 conf = pm_data.get("alpha_alignment_score", 0.0)
                 t_exposure = st.session_state['target_sector_exposure']
                 
-                if any(sec['Weight_%'] > 30.5 for sec in t_exposure): 
+                if any(sec['Weight_%'] > 50.5 for sec in t_exposure): 
                     st.error(f"🔴 BLOCKED: {cro_data.get('audit_explanation')}")
                 elif conf > 0.5: 
                     st.success(f"🟢 APPROVED: {pm_data.get('audit_explanation')}")
