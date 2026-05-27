@@ -21,44 +21,60 @@ try:
     from optimizer import run_black_litterman
     from risk import run_institutional_audit
 except ModuleNotFoundError as e:
-    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดตรวจสอบบน GitHub ว่าไฟล์เหล่านี้ (เช่น `data_loader.py`) ถูกสร้างไว้ที่ **หน้าแรกสุด** ของโปรเจกต์")
+    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดตรวจสอบบน GitHub ว่าไฟล์ `data_loader.py`, `factors.py`, `optimizer.py`, `risk.py` ถูกสร้างไว้ที่ **หน้าแรกสุด** ของโปรเจกต์")
     st.stop()
 
 warnings.filterwarnings("ignore")
-
 PORTFOLIO_FILE = "my_portfolio_data.csv"
+
+# ==========================================
+# 💾 ฐานข้อมูลถอดรหัสและ Thesis Layer 
+# ==========================================
 SECTOR_DB = {
     "💻 Tech": ["NVDA", "MSFT", "GOOG", "META", "CSCO", "TXN", "AAPL", "AMD", "PLTR", "AVGO", "RKLB"],
-    "🛍️ Consumer": ["COST", "KO", "PEP", "BLK", "MELI", "V", "MA", "WMT", "JPM"],
+    "🛍️ Consumer": ["COST", "KO", "PEP", "BLK", "MELI", "V", "MA", "WMT"],
+    "🏦 Finance": ["BRK-B", "JPM"],
     "🩺 Health": ["UNH", "JNJ", "ISRG", "LLY", "ABBV"],
     "🚗 EV": ["TSLA", "UBER", "TM"],
     "🌿 Green": ["FSLR", "ENPH", "NEE", "SEDG"]
 }
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
-THESIS_DB = {"NVDA": "AI Infra Dominance", "MSFT": "Cloud & OS Monopoly", "COST": "Membership Cashflow"} 
+THESIS_DB = {"NVDA": "AI Infra Dominance", "JNJ": "Healthcare Titan", "TSLA": "EV & AI Robotics", "ENPH": "Solar Inverter Leader", "TXN": "Analog Chip Moat", "BRK-B": "Fortress Balance Sheet", "RKLB": "Space Infrastructure"} 
+
+# 💎 ฝังพอร์ตจริงเป็นค่าเริ่มต้น (แก้ปัญหาคลาวด์ลบความจำ)
+DEFAULT_PORTFOLIO = {
+    "BRK-B": 1361.56,
+    "NVDA": 1128.72,
+    "JNJ": 745.42,
+    "TSLA": 475.33,
+    "ENPH": 311.58,
+    "TXN": 308.51,
+    "RKLB": 156.75
+}
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
 st.title("🛡️ QUANT-HQ DCA (V. Modular OS)")
 
 # ================= UI & SIDEBAR =================
-default_tickers = "MSFT, AVGO, COST, NVDA, V, KO, JNJ, RKLB"
+default_tickers_str = ", ".join(DEFAULT_PORTFOLIO.keys())
+
 if os.path.exists(PORTFOLIO_FILE):
     try:
         temp_df = pd.read_csv(PORTFOLIO_FILE)
         if "รายชื่อหุ้น" in temp_df.columns:
             valid_tickers = [str(t) for t in temp_df["รายชื่อหุ้น"].tolist() if str(t).strip()]
-            if valid_tickers: default_tickers = ", ".join(valid_tickers)
+            if valid_tickers: default_tickers_str = ", ".join(valid_tickers)
     except: pass
 
 st.sidebar.subheader("🗂️ หุ้นในพอร์ตของคุณ")
-tickers_input = st.sidebar.text_area("รายชื่อหุ้นที่ถืออยู่ (คั่นด้วยลูกน้ำ)", default_tickers)
+tickers_input = st.sidebar.text_area("รายชื่อหุ้น (คั่นด้วยลูกน้ำ)", default_tickers_str)
 my_portfolio = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
 engine_choice = st.sidebar.radio("เข็มทิศการลงทุน:", ["🧠 Auto-Pilot (BL + Adaptive)", "🛡️ Safe Mode (Risk Parity)"])
 base_lambda = st.sidebar.slider("ระดับความกลัวตั้งต้น", 0.1, 10.0, 2.0, 0.1)
 
 col_input1, col_input2 = st.columns(2)
-with col_input1: actual_budget = st.number_input("💵 งบประมาณจัดสรร (บาท)", 100, 50000, 500, 100)
+with col_input1: actual_budget = st.number_input("💵 งบประมาณจัดสรรรอบนี้ (บาท)", 100, 50000, 500, 100) # ตั้งเป้าที่ 500 ตามวินัยกัปตัน
 with col_input2: min_order_thb = st.number_input("🚦 ยอดซื้อขั้นต่ำต่อหุ้น (บาท)", 10, 500, 50, 10)
 
 saved_dict = {}
@@ -68,20 +84,25 @@ if os.path.exists(PORTFOLIO_FILE):
         saved_dict = dict(zip(saved_df["รายชื่อหุ้น"], pd.to_numeric(saved_df["ยอดเงินปัจจุบัน (บาท)"], errors='coerce').fillna(0.0)))
     except: pass
 
-default_rows = [{"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": float(saved_dict.get(t, 0.0))} for t in my_portfolio]
+# โหลดค่าจากพอร์ตเริ่มต้นที่ฝังไว้ ถ้าระบบจำไม่ได้
+default_rows = []
+for t in my_portfolio:
+    if t in saved_dict: val = saved_dict[t]
+    else: val = DEFAULT_PORTFOLIO.get(t, 0.0)
+    default_rows.append({"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": val})
+
 df_holdings_edited = st.data_editor(pd.DataFrame(default_rows), use_container_width=True, hide_index=True)
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
 current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
 # ================= EXECUTION & STATE MANAGEMENT =================
-# กดปุ่มรัน Quant จะสั่งให้รีเซ็ตความจำ แล้วเริ่มคำนวณใหม่
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     st.session_state['run_quant_engine'] = True
     st.session_state['matrix_calculated'] = False 
 
 if st.session_state.get('run_quant_engine', False):
     
-    # --- PHASE 1: การคำนวณ (ทำแค่รอบเดียวแล้วจำค่าไว้) ---
+    # --- PHASE 1: การคำนวณ (ทำแค่รอบเดียว) ---
     if not st.session_state.get('matrix_calculated', False):
         status_box = st.status("🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=True)
         
@@ -196,7 +217,7 @@ if st.session_state.get('run_quant_engine', False):
         t_exposure = [{"Sector": r['Sector'], "Weight_%": round(r['Target_%'], 1)} for _, r in port_df.groupby('Sector')['Target_%'].sum().reset_index().iterrows()]
         p_state = json.dumps({"market_regime": "PANIC" if is_panic else "NORMAL", "proposed_buys": out[out['ซื้อ']>0][['หุ้น', 'ซื้อ']].to_dict('records'), "target_sector_exposure": t_exposure, "top_alpha": final_df.head(5)[['Ticker', 'Alpha_Score']].to_dict('records')})
 
-        # 🧠 บันทึกทุกอย่างลงความจำชั่วคราว (Session State)
+        # 🧠 บันทึก state
         st.session_state['vix_current'] = vix_current
         st.session_state['is_panic'] = is_panic
         st.session_state['fomo_list'] = fomo_list
@@ -207,9 +228,9 @@ if st.session_state.get('run_quant_engine', False):
         st.session_state['max_sector_cap_val'] = max_sector_cap
         
         status_box.update(label="--- Quant Engine ประมวลผลเสร็จสิ้น ---", state="complete")
-        st.session_state['matrix_calculated'] = True # จำไว้ว่าคำนวณเสร็จแล้ว
+        st.session_state['matrix_calculated'] = True
         
-    # --- PHASE 2: ดึงข้อมูลจากความจำมาแสดงผล (เร็วปรู๊ดปร๊าด) ---
+    # --- PHASE 2: ดึงข้อมูลจากความจำ ---
     if st.session_state['is_panic']:
         st.error(f"🚨 Regime: PANIC (VIX = {st.session_state['vix_current']:.1f}) ลด Momentum, เพิ่ม Quality, บังคับ Sector < 30%")
     elif st.session_state['vix_current'] < 15:
@@ -223,7 +244,7 @@ if st.session_state.get('run_quant_engine', False):
     st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES")
     st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
-    # --- PHASE 3: AI Audit Trigger (รันได้ทันทีไม่ต้องคำนวณ Matrix ใหม่) ---
+    # --- PHASE 3: AI Audit ---
     if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key: st.error("❌ ไม่พบ API Key! โปรดใส่ GEMINI_API_KEY ใน Settings > Secrets")
