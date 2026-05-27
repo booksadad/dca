@@ -17,15 +17,25 @@ if root_dir not in sys.path:
 # ==========================================
 try:
     from data_loader import fetch_fundamental_data, fetch_market_data
-    from factors import calc_zscore, calculate_rsi, check_doi_risk, find_sr_levels
+    from factors import calculate_rsi, check_doi_risk, find_sr_levels
     from optimizer import run_black_litterman
     from risk import run_institutional_audit
 except ModuleNotFoundError as e:
-    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดตรวจสอบบน GitHub ว่าไฟล์ `data_loader.py`, `factors.py`, `optimizer.py`, `risk.py` ถูกสร้างไว้ที่ **หน้าแรกสุด** ของโปรเจกต์")
+    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดตรวจสอบบน GitHub ว่าไฟล์สมองกลถูกสร้างไว้ที่ **หน้าแรกสุด** ของโปรเจกต์")
     st.stop()
 
 warnings.filterwarnings("ignore")
 PORTFOLIO_FILE = "my_portfolio_data.csv"
+
+# ==========================================
+# 🛡️ ระบบป้องกัน Z-Score ล่ม (Anti-NaN System)
+# ==========================================
+def calc_zscore(series):
+    s = pd.to_numeric(series, errors='coerce').fillna(0)
+    std_val = s.std()
+    if pd.isna(std_val) or std_val == 0:
+        return s - s.mean()
+    return (s - s.mean()) / std_val
 
 # ==========================================
 # 💾 ฐานข้อมูลถอดรหัสและ Thesis Layer 
@@ -41,7 +51,6 @@ SECTOR_DB = {
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
 THESIS_DB = {"NVDA": "AI Infra Dominance", "JNJ": "Healthcare Titan", "TSLA": "EV & AI Robotics", "ENPH": "Solar Inverter Leader", "TXN": "Analog Chip Moat", "BRK-B": "Fortress Balance Sheet", "RKLB": "Space Infrastructure"} 
 
-# 💎 ฝังพอร์ตจริงเป็นค่าเริ่มต้น (บังคับใช้ตัวนี้เสมอ)
 DEFAULT_PORTFOLIO = {
     "BRK-B": 1361.56,
     "NVDA": 1128.72,
@@ -76,10 +85,8 @@ if os.path.exists(PORTFOLIO_FILE):
 
 default_rows = []
 for t in my_portfolio:
-    if t in saved_dict and saved_dict[t] > 0: 
-        val = saved_dict[t] 
-    else: 
-        val = DEFAULT_PORTFOLIO.get(t, 0.0) 
+    if t in saved_dict and saved_dict[t] > 0: val = saved_dict[t] 
+    else: val = DEFAULT_PORTFOLIO.get(t, 0.0) 
     default_rows.append({"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": val})
 
 df_holdings_edited = st.data_editor(pd.DataFrame(default_rows), use_container_width=True, hide_index=True)
@@ -97,8 +104,16 @@ if st.session_state.get('run_quant_engine', False):
         status_box = st.status("🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=True)
         
         benchmark, vix_ticker = 'VOO', '^VIX'
-        market_data = fetch_market_data([benchmark, vix_ticker], period="3y")
-        vix_current = market_data[vix_ticker].iloc[-1] if vix_ticker in market_data else 20.0
+        market_proxy = [t for sublist in SECTOR_DB.values() for t in sublist]
+        
+        # 🛠️ THE FIX: โหลด VOO และ VIX รวมไปพร้อมกับหุ้นตัวอื่นเลย เพื่อให้ Index เวลาตรงกันเป๊ะ 100%
+        universe_list = list(set(my_portfolio + market_proxy + [benchmark, vix_ticker]))
+        
+        status_box.update(label="📡 กำลังดึงข้อมูลราคาย้อนหลังแบบ Unified Data...")
+        prices_3y = fetch_market_data(universe_list, period="3y")
+        
+        market_data = prices_3y[[benchmark, vix_ticker]].ffill()
+        vix_current = market_data[vix_ticker].iloc[-1] if not market_data[vix_ticker].dropna().empty else 20.0
         
         max_sector_cap = 0.40
         turnover_penalty = 0.02
@@ -110,40 +125,33 @@ if st.session_state.get('run_quant_engine', False):
         elif vix_current < 15:
             turnover_penalty, max_sector_cap, w_mom, w_quality, w_value = 0.01, 0.50, 0.5, 0.3, 0.2
         
-        voo_ret = market_data[benchmark].pct_change().dropna()
+        voo_ret = market_data[benchmark].pct_change().fillna(0)
         dynamic_lambda = base_lambda * (voo_ret.tail(30).std() / voo_ret.tail(252).std() if voo_ret.tail(252).std() > 0 else 1.0)
         
-        market_proxy = [t for sublist in SECTOR_DB.values() for t in sublist]
-        universe_list = list(set(my_portfolio + market_proxy))
-        
-        prices_3y = fetch_market_data(universe_list, period="3y")
-        prices_1y = prices_3y.tail(252)
-        
-        # 🛠️ THE FIX: ใช้ fillna(0) แทน dropna() เพื่อป้องกันข้อมูลโดนล้างทั้งตาราง
+        # ตัดเหลือเฉพาะหุ้น ไม่เอา VOO/VIX ไปคำนวณ Alpha
+        stock_columns = [c for c in prices_3y.columns if c not in [benchmark, vix_ticker]]
+        prices_1y = prices_3y[stock_columns].tail(252)
         returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
-        df_fundamentals = fetch_fundamental_data(prices_1y.columns.tolist())
+        status_box.update(label="🧬 กำลังสกัด Factor และคำนวณ Alpha Score...")
+        df_fundamentals = fetch_fundamental_data(stock_columns)
         metrics, rsi_data, sr_data = [], {}, {}
+        mkt_ret_aligned = voo_ret.tail(252)
         
-        # จัด Index ให้ตรงกันก่อนเพื่อความชัวร์
-        mkt_ret_aligned = market_data[benchmark].pct_change().reindex(returns_1y.index).fillna(0)
-        
-        for t in prices_1y.columns:
+        for t in stock_columns:
             try:
-                # 🛠️ THE FIX: ใช้ Pandas cov() แทน numpy เพื่อรับมือกับความยาวแถวที่อาจไม่เท่ากัน
+                # 🛠️ THE FIX: คำนวณ Covariance อย่างปลอดภัย
                 cov = returns_1y[t].cov(mkt_ret_aligned)
                 var = mkt_ret_aligned.var()
                 beta = cov / var if var > 0 else 1.0
                 
-                s_t, s_m = prices_1y[t].dropna(), market_data[benchmark].dropna()
+                s_t = prices_1y[t].dropna()
+                s_m = market_data[benchmark].tail(252).dropna()
                 
-                if len(s_t) >= 126 and len(s_m) >= 126:
-                    ret_6m = (s_t.iloc[-1]/s_t.iloc[-126]) - 1
-                    mkt_ret_6m = (s_m.iloc[-1]/s_m.iloc[-126]) - 1
-                elif len(s_t) > 0 and len(s_m) > 0:
-                    ret_6m = (s_t.iloc[-1]/s_t.iloc[0]) - 1
-                    mkt_ret_6m = (s_m.iloc[-1]/s_m.iloc[0]) - 1
+                if len(s_t) > 20 and len(s_m) > 20: # ต้องมีข้อมูลอย่างน้อย 1 เดือน
+                    ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1
+                    mkt_ret_6m = (s_m.iloc[-1]/s_m.iloc[max(0, len(s_m)-126)]) - 1
                 else:
                     ret_6m, mkt_ret_6m = 0.0, 0.0
                     
@@ -157,13 +165,14 @@ if st.session_state.get('run_quant_engine', False):
             rsi_data[t] = calculate_rsi(clean_series).iloc[-1] if len(clean_series) > 14 else 50.0
             sr_data[t] = find_sr_levels(clean_series)
             
-        df_metrics = pd.merge(pd.DataFrame(metrics), df_fundamentals, on='Ticker')
+        df_metrics = pd.merge(pd.DataFrame(metrics), df_fundamentals, on='Ticker').fillna(0.0)
         
-        z_mom = calc_zscore(df_metrics['Residual_Mom']).fillna(0)
-        z_quality = (calc_zscore(df_metrics['ROA']).fillna(0) + calc_zscore(df_metrics['Margin']).fillna(0)) / 2
-        z_value = (calc_zscore(df_metrics['FCF_Yield']).fillna(0) + (calc_zscore(df_metrics['PEG']).fillna(0) * -1)) / 2
+        # คืนชีพ Z-Score ให้คำนวณได้อย่างปลอดภัย 100%
+        z_mom = calc_zscore(df_metrics['Residual_Mom'])
+        z_quality = (calc_zscore(df_metrics['ROA']) + calc_zscore(df_metrics['Margin'])) / 2
+        z_value = (calc_zscore(df_metrics['FCF_Yield']) + (calc_zscore(df_metrics['PEG']) * -1)) / 2
         
-        df_metrics['Alpha_Score'] = ((z_mom * w_mom) + (z_quality * w_quality) + (z_value * w_value)).fillna(0)
+        df_metrics['Alpha_Score'] = (z_mom * w_mom) + (z_quality * w_quality) + (z_value * w_value)
         df_metrics['Max_Drawdown'] = df_metrics['Ticker'].map(max_dd)
         
         final_df = df_metrics.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
@@ -177,13 +186,13 @@ if st.session_state.get('run_quant_engine', False):
 
         if "Auto-Pilot" in engine_choice:
             try:
-                opt_result = run_black_litterman(port_df, returns_1y, dynamic_lambda, turnover_penalty, max_sector_cap, current_weights_arr)
+                opt_result = run_black_litterman(port_df, returns_1y[port_df['Ticker'].tolist()], dynamic_lambda, turnover_penalty, max_sector_cap, current_weights_arr)
                 if opt_result.success: port_df['Target_%'] = port_df['Ticker'].map(dict(zip(port_df['Ticker'].tolist(), opt_result.x))) * 100.0
                 else: raise ValueError("Matrix Non-Convergence")
-            except:
-                port_df['Target_%'] = (1.0 / returns_1y.std()) / (1.0 / returns_1y.std()).sum() * 100.0
+            except Exception as e:
+                port_df['Target_%'] = (1.0 / returns_1y[port_df['Ticker'].tolist()].std()) / (1.0 / returns_1y[port_df['Ticker'].tolist()].std()).sum() * 100.0
         else:
-            port_df['Target_%'] = (1.0 / returns_1y.std()) / (1.0 / returns_1y.std()).sum() * 100.0
+            port_df['Target_%'] = (1.0 / returns_1y[port_df['Ticker'].tolist()].std()) / (1.0 / returns_1y[port_df['Ticker'].tolist()].std()).sum() * 100.0
 
         for _, row in port_df.groupby('Sector')['Target_%'].sum().reset_index().iterrows():
             if row['Target_%'] > max_sector_cap * 100:
