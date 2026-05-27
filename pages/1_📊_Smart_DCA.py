@@ -1,10 +1,21 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os, json
+import os, sys, json
 import warnings
 
-# นำเข้าฟังก์ชันจากโครงสร้างใหม่
+# ==========================================
+# 🛠️ ระบบนำทาง (Path Resolver) 
+# บังคับให้ Python มองเห็นไฟล์สมองกลที่อยู่หน้าแรกสุด
+# ==========================================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.abspath(os.path.join(current_dir, '..'))
+if root_dir not in sys.path:
+    sys.path.append(root_dir)
+
+# ==========================================
+# 📥 นำเข้าสมองกลจากไฟล์ต่างๆ (Modular Imports)
+# ==========================================
 from data_loader import fetch_fundamental_data, fetch_market_data
 from factors import calc_zscore, calculate_rsi, check_doi_risk, find_sr_levels
 from optimizer import run_black_litterman
@@ -21,7 +32,7 @@ SECTOR_DB = {
     "🌿 Green": ["FSLR", "ENPH", "NEE", "SEDG"]
 }
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
-THESIS_DB = {"NVDA": "AI Infra Dominance", "MSFT": "Cloud & OS Monopoly", "COST": "Membership Cashflow"} # ย่อได้ตามต้องการ
+THESIS_DB = {"NVDA": "AI Infra Dominance", "MSFT": "Cloud & OS Monopoly", "COST": "Membership Cashflow"} 
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
 st.title("🛡️ QUANT-HQ DCA (V. Modular OS)")
@@ -180,6 +191,15 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     if fomo_list: st.warning(f"📉 ตรวจพบหุ้น Overbought ทำการลดเป้าหมาย: {', '.join(fomo_list)}")
     st.dataframe(out[['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
     
+    st.markdown("---")
+    st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES")
+    top_alpha_display = final_df.head(10).copy() 
+    top_alpha_display['Sector'] = top_alpha_display['Ticker'].map(lambda x: ticker_to_sector.get(x, '🧩 Others'))
+    top_alpha_display['Alpha_Score'] = top_alpha_display['Alpha_Score'].round(2)
+    top_alpha_display['MDD'] = top_alpha_display['Max_Drawdown'].round(1).astype(str) + "%"
+    top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
+    st.dataframe(top_alpha_display[['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
+
     # 5. AI Audit Trigger
     if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
         api_key = st.secrets.get("GEMINI_API_KEY")
