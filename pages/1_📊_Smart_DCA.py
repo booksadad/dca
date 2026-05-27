@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import os, sys, json
 import warnings
+from sklearn.covariance import LedoitWolf
+from scipy.optimize import minimize
 
 # ==========================================
 # 🛠️ ทะลวงกำแพงโฟลเดอร์ (Bulletproof Path Resolver)
@@ -18,10 +20,9 @@ if root_dir not in sys.path:
 try:
     from data_loader import fetch_fundamental_data, fetch_market_data
     from factors import calculate_rsi, check_doi_risk, find_sr_levels
-    from optimizer import run_black_litterman
     from risk import run_institutional_audit
 except ModuleNotFoundError as e:
-    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดตรวจสอบบน GitHub ว่าไฟล์สมองกลถูกสร้างไว้ที่ **หน้าแรกสุด** ของโปรเจกต์")
+    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดตรวจสอบบน GitHub ว่าไฟล์ `data_loader.py`, `factors.py`, `risk.py` ถูกสร้างไว้ที่ **หน้าแรกสุด** ของโปรเจกต์")
     st.stop()
 
 warnings.filterwarnings("ignore")
@@ -51,6 +52,7 @@ SECTOR_DB = {
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
 THESIS_DB = {"NVDA": "AI Infra Dominance", "JNJ": "Healthcare Titan", "TSLA": "EV & AI Robotics", "ENPH": "Solar Inverter Leader", "TXN": "Analog Chip Moat", "BRK-B": "Fortress Balance Sheet", "RKLB": "Space Infrastructure"} 
 
+# 💎 ฝังพอร์ตจริงเป็นค่าเริ่มต้น
 DEFAULT_PORTFOLIO = {
     "BRK-B": 1361.56,
     "NVDA": 1128.72,
@@ -62,7 +64,7 @@ DEFAULT_PORTFOLIO = {
 }
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
-st.title("🛡️ QUANT-HQ DCA (V. Modular OS)")
+st.title("🛡️ QUANT-HQ DCA (Institutional Grade)")
 
 # ================= UI & SIDEBAR =================
 st.sidebar.subheader("🗂️ หุ้นในพอร์ตของคุณ")
@@ -106,9 +108,8 @@ if st.session_state.get('run_quant_engine', False):
         benchmark, vix_ticker = 'VOO', '^VIX'
         market_proxy = [t for sublist in SECTOR_DB.values() for t in sublist]
         
-        # 🛠️ THE FIX: โหลด VOO และ VIX รวมไปพร้อมกับหุ้นตัวอื่นเลย เพื่อให้ Index เวลาตรงกันเป๊ะ 100%
+        # โหลด Data Unified ทีเดียว
         universe_list = list(set(my_portfolio + market_proxy + [benchmark, vix_ticker]))
-        
         status_box.update(label="📡 กำลังดึงข้อมูลราคาย้อนหลังแบบ Unified Data...")
         prices_3y = fetch_market_data(universe_list, period="3y")
         
@@ -128,7 +129,6 @@ if st.session_state.get('run_quant_engine', False):
         voo_ret = market_data[benchmark].pct_change().fillna(0)
         dynamic_lambda = base_lambda * (voo_ret.tail(30).std() / voo_ret.tail(252).std() if voo_ret.tail(252).std() > 0 else 1.0)
         
-        # ตัดเหลือเฉพาะหุ้น ไม่เอา VOO/VIX ไปคำนวณ Alpha
         stock_columns = [c for c in prices_3y.columns if c not in [benchmark, vix_ticker]]
         prices_1y = prices_3y[stock_columns].tail(252)
         returns_1y = prices_1y.pct_change().fillna(0)
@@ -141,7 +141,6 @@ if st.session_state.get('run_quant_engine', False):
         
         for t in stock_columns:
             try:
-                # 🛠️ THE FIX: คำนวณ Covariance อย่างปลอดภัย
                 cov = returns_1y[t].cov(mkt_ret_aligned)
                 var = mkt_ret_aligned.var()
                 beta = cov / var if var > 0 else 1.0
@@ -149,7 +148,7 @@ if st.session_state.get('run_quant_engine', False):
                 s_t = prices_1y[t].dropna()
                 s_m = market_data[benchmark].tail(252).dropna()
                 
-                if len(s_t) > 20 and len(s_m) > 20: # ต้องมีข้อมูลอย่างน้อย 1 เดือน
+                if len(s_t) > 20 and len(s_m) > 20: 
                     ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1
                     mkt_ret_6m = (s_m.iloc[-1]/s_m.iloc[max(0, len(s_m)-126)]) - 1
                 else:
@@ -167,7 +166,6 @@ if st.session_state.get('run_quant_engine', False):
             
         df_metrics = pd.merge(pd.DataFrame(metrics), df_fundamentals, on='Ticker').fillna(0.0)
         
-        # คืนชีพ Z-Score ให้คำนวณได้อย่างปลอดภัย 100%
         z_mom = calc_zscore(df_metrics['Residual_Mom'])
         z_quality = (calc_zscore(df_metrics['ROA']) + calc_zscore(df_metrics['Margin'])) / 2
         z_value = (calc_zscore(df_metrics['FCF_Yield']) + (calc_zscore(df_metrics['PEG']) * -1)) / 2
@@ -184,12 +182,77 @@ if st.session_state.get('run_quant_engine', False):
         port_df['Weight_%'] = (port_df['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
         current_weights_arr = (port_df['Current'] / total_port_value).fillna(0).values if total_port_value > 0 else np.zeros(len(port_df))
 
+        # ==========================================
+        # 🧠 THE INSTITUTIONAL QUANT ENGINE 
+        # (Grinold's Law + Bayesian Black-Litterman)
+        # ==========================================
         if "Auto-Pilot" in engine_choice:
             try:
-                opt_result = run_black_litterman(port_df, returns_1y[port_df['Ticker'].tolist()], dynamic_lambda, turnover_penalty, max_sector_cap, current_weights_arr)
-                if opt_result.success: port_df['Target_%'] = port_df['Ticker'].map(dict(zip(port_df['Ticker'].tolist(), opt_result.x))) * 100.0
-                else: raise ValueError("Matrix Non-Convergence")
+                status_box.update(label="🏛️ คำนวณ Institutional Black-Litterman (P Matrix & IC Calibration)...")
+                
+                # 1. Equilibrium (Prior)
+                lw = LedoitWolf()
+                lw.fit(returns_1y[port_df['Ticker'].tolist()])
+                shrunk_cov = lw.covariance_ * 252 
+                
+                inv_vol = 1.0 / returns_1y[port_df['Ticker'].tolist()].std()
+                w_eq = (inv_vol / inv_vol.sum()).values
+                Pi = dynamic_lambda * np.dot(shrunk_cov, w_eq) 
+                
+                # 2. P, Q, Omega Matrices
+                tau = 0.05
+                IC = 0.05 
+                num_assets = len(port_df)
+                
+                P = np.eye(num_assets) 
+                Q = np.zeros(num_assets)
+                omega_diag = np.zeros(num_assets)
+                
+                for i, t in enumerate(port_df['Ticker'].tolist()):
+                    z_score = port_df.loc[port_df['Ticker'] == t, 'Alpha_Score'].values[0]
+                    asset_vol = np.sqrt(shrunk_cov[i, i])
+                    
+                    # Grinold's Law for Active Return
+                    active_return = IC * asset_vol * z_score
+                    Q[i] = Pi[i] + active_return 
+                    
+                    # Confidence Calibration
+                    confidence = min(max(abs(z_score) / 3.0, 0.01), 0.99) 
+                    omega_diag[i] = (tau * shrunk_cov[i, i]) / confidence
+
+                Omega = np.diag(omega_diag)
+                
+                # 3. Bayesian Master Equation
+                tau_cov_inv = np.linalg.inv(tau * shrunk_cov)
+                omega_inv = np.linalg.inv(Omega)
+                
+                term1 = np.linalg.inv(tau_cov_inv + P.T @ omega_inv @ P)
+                term2 = (tau_cov_inv @ Pi) + (P.T @ omega_inv @ Q)
+                mu_bl = term1 @ term2 
+
+                # 4. Scipy Optimizer Constraints
+                def neg_utility(w):
+                    expected_return = np.sum(mu_bl * w)
+                    portfolio_variance = np.dot(w.T, np.dot(shrunk_cov, w)) 
+                    return -(expected_return - (dynamic_lambda / 2.0) * portfolio_variance - (0.5 * np.sum(w**2)) - (turnover_penalty * np.sum(np.abs(w - current_weights_arr))))
+                    
+                bounds = tuple((0.0, max_sector_cap) for _ in range(num_assets))
+                constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
+                constraints.append({'type': 'ineq', 'fun': lambda w: 0.60 - np.sum(np.abs(w - current_weights_arr))})
+                
+                for sector in port_df['Sector'].unique():
+                    sec_indices = [i for i, t in enumerate(port_df['Ticker']) if port_df.loc[port_df['Ticker'] == t, 'Sector'].values[0] == sector]
+                    constraints.append({'type': 'ineq', 'fun': lambda w, idx=sec_indices: max_sector_cap - np.sum(w[idx])})
+                
+                opt_result = minimize(neg_utility, num_assets * [1./num_assets], method='SLSQP', bounds=bounds, constraints=constraints, options={'maxiter': 300})
+                
+                if opt_result.success: 
+                    port_df['Target_%'] = port_df['Ticker'].map(dict(zip(port_df['Ticker'].tolist(), opt_result.x))) * 100.0
+                else: 
+                    raise ValueError("Matrix Non-Convergence")
+                    
             except Exception as e:
+                st.warning(f"Fallback to Risk Parity: {e}")
                 port_df['Target_%'] = (1.0 / returns_1y[port_df['Ticker'].tolist()].std()) / (1.0 / returns_1y[port_df['Ticker'].tolist()].std()).sum() * 100.0
         else:
             port_df['Target_%'] = (1.0 / returns_1y[port_df['Ticker'].tolist()].std()) / (1.0 / returns_1y[port_df['Ticker'].tolist()].std()).sum() * 100.0
