@@ -5,23 +5,31 @@ import os, sys, json
 import warnings
 
 # ==========================================
-# 🛠️ ระบบนำทาง (Path Resolver) 
-# บังคับให้ Python มองเห็นไฟล์สมองกลที่อยู่หน้าแรกสุด
+# 🛠️ ทะลวงกำแพงโฟลเดอร์ (Bulletproof Path Resolver)
+# บังคับให้ Python วิ่งไปหาไฟล์สมองกลที่หน้าแรกสุด (Root) ก่อนเสมอ
 # ==========================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.abspath(os.path.join(current_dir, '..'))
 if root_dir not in sys.path:
-    sys.path.append(root_dir)
+    sys.path.insert(0, root_dir) # ใช้ insert(0) เพื่อให้ความสำคัญสูงสุด
 
 # ==========================================
 # 📥 นำเข้าสมองกลจากไฟล์ต่างๆ (Modular Imports)
 # ==========================================
-from data_loader import fetch_fundamental_data, fetch_market_data
-from factors import calc_zscore, calculate_rsi, check_doi_risk, find_sr_levels
-from optimizer import run_black_litterman
-from risk import run_institutional_audit
+try:
+    from data_loader import fetch_fundamental_data, fetch_market_data
+    from factors import calc_zscore, calculate_rsi, check_doi_risk, find_sr_levels
+    from optimizer import run_black_litterman
+    from risk import run_institutional_audit
+except ModuleNotFoundError as e:
+    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดตรวจสอบบน GitHub ว่าไฟล์เหล่านี้ (เช่น `data_loader.py`) ถูกสร้างไว้ที่ **หน้าแรกสุด** ของโปรเจกต์ และสะกดชื่อถูกต้องทุกตัวอักษร")
+    st.stop()
 
 warnings.filterwarnings("ignore")
+
+# ==========================================
+# (โค้ดส่วนที่เหลือเหมือนเดิมทั้งหมด)
+# ==========================================
 
 PORTFOLIO_FILE = "my_portfolio_data.csv"
 SECTOR_DB = {
@@ -74,12 +82,10 @@ current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], 
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     status_box = st.status("🔮 เดินเครื่องสมองกลประมวลผล Matrix สากล...", expanded=True)
     
-    # 1. โหลดข้อมูล
     benchmark, vix_ticker = 'VOO', '^VIX'
     market_data = fetch_market_data([benchmark, vix_ticker], period="3y")
     vix_current = market_data[vix_ticker].iloc[-1] if vix_ticker in market_data else 20.0
     
-    # Regime Detection
     max_sector_cap = 0.40
     turnover_penalty = 0.02
     w_mom, w_quality, w_value = 0.4, 0.3, 0.3
@@ -107,7 +113,6 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     metrics, rsi_data, sr_data = [], {}, {}
     mkt_ret_aligned = voo_ret.reindex(returns_1y.index).fillna(0)
     
-    # 2. Feature Engineering
     for t in prices_1y.columns:
         try:
             cov = np.cov(returns_1y[t], mkt_ret_aligned)[0][1]
@@ -141,7 +146,6 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     port_df['Weight_%'] = (port_df['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
     current_weights_arr = (port_df['Current'] / total_port_value).fillna(0).values if total_port_value > 0 else np.zeros(len(port_df))
 
-    # 3. Optimization
     if "Auto-Pilot" in engine_choice:
         try:
             opt_result = run_black_litterman(port_df, returns_1y, dynamic_lambda, turnover_penalty, max_sector_cap, current_weights_arr)
@@ -153,7 +157,6 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     else:
         port_df['Target_%'] = (1.0 / returns_1y.std()) / (1.0 / returns_1y.std()).sum() * 100.0
 
-    # Sector Cap Filter
     for _, row in port_df.groupby('Sector')['Target_%'].sum().reset_index().iterrows():
         if row['Target_%'] > max_sector_cap * 100:
             port_df.loc[port_df['Sector'] == row['Sector'], 'Target_%'] *= (max_sector_cap * 100) / row['Target_%']
@@ -167,7 +170,6 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
             fomo_list.append(f"{t} (-{(1-penalty)*100:.0f}%)")
     if fomo_list and port_df['Target_%'].sum() > 0: port_df['Target_%'] = (port_df['Target_%'] / port_df['Target_%'].sum()) * 100.0
 
-    # 4. Budget Allocation
     port_df['Target_Val'] = (total_port_value + actual_budget) * (port_df['Target_%'] / 100)
     port_df['Deficit'] = port_df['Target_Val'] - port_df['Current']
     
@@ -200,7 +202,6 @@ if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
     st.dataframe(top_alpha_display[['Ticker', 'Sector', 'Alpha_Score', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
-    # 5. AI Audit Trigger
     if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key: st.error("❌ ไม่พบ API Key!")
