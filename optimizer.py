@@ -15,8 +15,11 @@ def run_institutional_black_litterman(
     lw.fit(asset_returns)
     Sigma = lw.covariance_ * 252
     
-    w_mkt = (1.0 / (np.std(asset_returns, axis=0) + 1e-9)).values
-    w_mkt /= w_mkt.sum()
+    # 🛠️ THE FIX: เลี่ยงการใช้ In-place division (/=) บน Numpy Read-only View
+    # ให้ Pandas คำนวณสัดส่วนให้เสร็จก่อน แล้วค่อยดึง .values ออกมาทีหลังสุด
+    inv_vol = 1.0 / (np.std(asset_returns, axis=0) + 1e-9)
+    w_mkt = (inv_vol / inv_vol.sum()).values
+    
     Pi = risk_aversion * np.dot(Sigma, w_mkt)
     
     tau = base_tau * (1.0 - (0.5 * regime_probs.get('P_PANIC', 0.0)))
@@ -38,7 +41,7 @@ def run_institutional_black_litterman(
         utility -= 0.10 * np.sum(w**2) + np.sum(np.abs(w - current_weights)) * 0.0020
         return -utility
 
-    bounds = tuple((0.0, 0.45) for _ in range(num_assets)) # ขยายกรอบให้สอดคล้องกับพอร์ตที่มีความกระจุกตัวสูง
+    bounds = tuple((0.0, 0.45) for _ in range(num_assets))
     constraints = [
         {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0},
         {'type': 'ineq', 'fun': lambda w: turnover_limit - np.sum(np.abs(w - current_weights))}
@@ -47,5 +50,12 @@ def run_institutional_black_litterman(
         sec_idx = [i for i, t in enumerate(tickers) if port_df.loc[port_df['Ticker'] == t, 'Sector'].values[0] == sector]
         constraints.append({'type': 'ineq', 'fun': lambda w, idx=sec_idx: max_sector_cap - np.sum(w[idx])})
         
-    res = minimize(objective, current_weights if np.sum(current_weights) > 0.9 else (np.ones(num_assets)/num_assets), method='SLSQP', bounds=bounds, constraints=constraints, options={'maxiter': 500})
+    res = minimize(
+        objective, 
+        current_weights if np.sum(current_weights) > 0.9 else (np.ones(num_assets)/num_assets), 
+        method='SLSQP', 
+        bounds=bounds, 
+        constraints=constraints, 
+        options={'maxiter': 500}
+    )
     return res, mu_bl
