@@ -1,71 +1,91 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import streamlit as st
 
 class InstitutionalDataPipeline:
     def __init__(self, tickers):
         self.tickers = tickers
 
-    def filter_universe(self, adv_threshold=5_000_000, mktcap_threshold=500_000_000):
+    @staticmethod
+    @st.cache_data(ttl=86400) # 💾 Cache Layer: เก็บข้อมูลไว้ 1 วัน (24 ชม.)
+    def fetch_bulk_market_data(tickers, period="2y"):
         """
-        [Layer 1.1] Universe Construction 
-        ตัดหุ้น Market Cap เล็ก และสภาพคล่องต่ำ (ADV) ออกจากสารบบ
+        โหลดข้อมูลแบบ Bulk รวดเดียวจบ เพื่อแก้ปัญหา yf.info ที่ช้าและชอบ Timeout
+        """
+        data = yf.download(tickers, period=period, group_by='ticker', threads=True)
+        return data
+
+    def filter_universe(self, adv_threshold=5_000_000, price_floor=5.0, min_history_days=252):
+        """
+        [Layer 1.1] Universe Construction (Robust Filter)
+        - ADV > $5M
+        - Price > $5 (ตัด Penny Stocks)
+        - Listing Age > 1 ปี (ตัด IPO Noise)
         """
         valid_tickers = []
+        # ใช้ Cache Layer โหลดข้อมูลราคาย้อนหลัง 2 ปี
+        raw_data = self.fetch_bulk_market_data(self.tickers)
+        
         for t in self.tickers:
             try:
-                stock = yf.Ticker(t)
-                info = stock.info
+                # จัดการกรณีโหลดหุ้นตัวเดียว vs หลายตัว
+                df = raw_data[t] if len(self.tickers) > 1 else raw_data
+                df = df.dropna(subset=['Close'])
                 
-                # เช็ค Market Cap Floor
-                mkt_cap = info.get('marketCap', 0)
-                if mkt_cap < mktcap_threshold:
+                # 1. Listing Age Filter (ต้องมีข้อมูลเทรดมาแล้วอย่างน้อย ~1 ปี)
+                if len(df) < min_history_days:
                     continue
-                
-                # เช็ค Average Daily Volume (ADV) ย้อนหลัง 20 วัน
-                hist = stock.history(period="1mo")
-                if len(hist) > 0:
-                    adv = (hist['Volume'] * hist['Close']).mean()
-                    if adv >= adv_threshold:
-                        valid_tickers.append(t)
+                    
+                # 2. Price Floor (ราคาปิดล่าสุดต้องมากกว่า $5)
+                if df['Close'].iloc[-1] < price_floor:
+                    continue
+                    
+                # 3. ADV Filter (Volume * Price ย้อนหลัง 20 วัน)
+                adv = (df['Volume'].tail(20) * df['Close'].tail(20)).mean()
+                if adv >= adv_threshold:
+                    valid_tickers.append(t)
             except:
                 continue
+                
         return valid_tickers
 
     def clean_fundamentals(self, df_fundamentals):
         """
-        [Layer 1.2] Clean Fundamentals (#6)
-        - TTM Averaging
-        - 3-Sigma Outlier Hold (Flag)
+        [Layer 1.2] Clean Fundamentals (Advanced Quant Methods)
+        - Rolling MAD แทน Standard Deviation
+        - Soft Clipping แทน Forward Fill
         - PIT (Point-in-Time) Lagging
         """
         clean_df = df_fundamentals.copy()
-        
-        # สมมติว่า Columns เป็น Time-Series ของ ROA, FCF, Margin รายไตรมาส
         metrics = ['ROA', 'FCF', 'Margin']
         
         for metric in metrics:
             if metric in clean_df.columns:
                 
-                # 1. 3-Sigma Outlier Flag -> Hold ค่าเดิม (ป้องกัน One-off items)
-                # คำนวณ Z-Score แบบ Rolling ย้อนหลัง
-                rolling_mean = clean_df[metric].rolling(window=8, min_periods=1).mean()
-                rolling_std = clean_df[metric].rolling(window=8, min_periods=1).std().fillna(method='bfill')
+                # 🧮 1. Robust Outlier Detection (Rolling Median + Rolling MAD)
+                rolling_median = clean_df[metric].rolling(window=8, min_periods=1).median()
                 
-                z_score = (clean_df[metric] - rolling_mean) / (rolling_std + 1e-9)
+                # คำนวณ MAD: Median of the Absolute Deviations
+                rolling_mad = clean_df[metric].rolling(window=8, min_periods=1).apply(
+                    lambda x: np.median(np.abs(x - np.median(x)))
+                )
                 
-                # สร้าง Mask สำหรับตัวที่กระโดดเกิน 3 Sigma
-                outlier_mask = z_score.abs() > 3.0
+                # คำนวณขอบเขตบนและล่าง (±3 Robust Z-Score)
+                mad_scaled = rolling_mad * 1.4826 + 1e-9
+                upper_bound = rolling_median + (3.0 * mad_scaled)
+                lower_bound = rolling_median - (3.0 * mad_scaled)
                 
-                # ถ้าเจอ Outlier ให้แทนค่าด้วย NaN แล้วใช้ Forward Fill (Hold ค่าก่อนหน้า)
-                clean_df.loc[outlier_mask, metric] = np.nan
-                clean_df[metric] = clean_df[metric].ffill()
+                # ✂️ 2. Soft Clipping 
+                # จำกัดเพดานและพื้นข้อมูล ไม่ให้เกินขอบเขต 3 MAD (แต่ไม่ใช้ ffill แช่แข็ง)
+                clean_df[metric] = clean_df[metric].clip(lower=lower_bound, upper=upper_bound)
 
-                # 2. ทำ TTM (เฉลี่ย 4 ไตรมาสย้อนหลัง ลด Spike)
+                # 3. TTM Smoothing (Prototype Approach)
+                # หมายเหตุ: ใน production จริงควรใช้ (Net Income TTM / Avg Assets)
+                # แต่เนื่องจากข้อจำกัดของ yfinance เราใช้ Rolling Mean 4 ไตรมาสไปก่อน
                 clean_df[f'{metric}_TTM'] = clean_df[metric].rolling(window=4, min_periods=1).mean()
                 
-                # 3. PIT (Point-in-Time) - Shift ข้อมูล 1 ไตรมาส (หรือ 45 วัน) 
-                # ป้องกัน Look-ahead bias ว่าเรารู้งบการเงินตั้งแต่วันปิดงบ
+                # 4. PIT Lagging (Shift 1 Qtr)
                 clean_df[f'{metric}_PIT'] = clean_df[f'{metric}_TTM'].shift(1).ffill()
 
         return clean_df
