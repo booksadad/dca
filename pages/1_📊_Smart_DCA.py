@@ -56,7 +56,6 @@ st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
 st.title("🛡️ QUANT-HQ DCA (V. Modular OS)")
 
 # ================= UI & SIDEBAR =================
-# 🛠️ แก้ไข: บังคับใช้รายชื่อหุ้นจาก DEFAULT_PORTFOLIO เสมอ ไม่สนไฟล์เก่า
 st.sidebar.subheader("🗂️ หุ้นในพอร์ตของคุณ")
 tickers_input = st.sidebar.text_area("รายชื่อหุ้น (คั่นด้วยลูกน้ำ)", ", ".join(DEFAULT_PORTFOLIO.keys()))
 my_portfolio = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
@@ -75,13 +74,12 @@ if os.path.exists(PORTFOLIO_FILE):
         saved_dict = dict(zip(saved_df["รายชื่อหุ้น"], pd.to_numeric(saved_df["ยอดเงินปัจจุบัน (บาท)"], errors='coerce').fillna(0.0)))
     except: pass
 
-# โหลดค่าจากพอร์ตเริ่มต้นที่ฝังไว้
 default_rows = []
 for t in my_portfolio:
     if t in saved_dict and saved_dict[t] > 0: 
-        val = saved_dict[t] # ถ้าใน CSV มีค่ายอดเงินใหม่ ให้ใช้ค่าใหม่
+        val = saved_dict[t] 
     else: 
-        val = DEFAULT_PORTFOLIO.get(t, 0.0) # ถ้าไม่มี ให้ดึงยอดเป๊ะๆ จากที่ฝังไว้
+        val = DEFAULT_PORTFOLIO.get(t, 0.0) 
     default_rows.append({"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": val})
 
 df_holdings_edited = st.data_editor(pd.DataFrame(default_rows), use_container_width=True, hide_index=True)
@@ -120,30 +118,47 @@ if st.session_state.get('run_quant_engine', False):
         
         prices_3y = fetch_market_data(universe_list, period="3y")
         prices_1y = prices_3y.tail(252)
-        returns_1y = prices_1y.pct_change().dropna()
+        
+        # 🛠️ THE FIX: ใช้ fillna(0) แทน dropna() เพื่อป้องกันข้อมูลโดนล้างทั้งตาราง
+        returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
         df_fundamentals = fetch_fundamental_data(prices_1y.columns.tolist())
         metrics, rsi_data, sr_data = [], {}, {}
-        mkt_ret_aligned = voo_ret.reindex(returns_1y.index).fillna(0)
+        
+        # จัด Index ให้ตรงกันก่อนเพื่อความชัวร์
+        mkt_ret_aligned = market_data[benchmark].pct_change().reindex(returns_1y.index).fillna(0)
         
         for t in prices_1y.columns:
             try:
-                cov = np.cov(returns_1y[t], mkt_ret_aligned)[0][1]
-                var = np.var(mkt_ret_aligned)
+                # 🛠️ THE FIX: ใช้ Pandas cov() แทน numpy เพื่อรับมือกับความยาวแถวที่อาจไม่เท่ากัน
+                cov = returns_1y[t].cov(mkt_ret_aligned)
+                var = mkt_ret_aligned.var()
                 beta = cov / var if var > 0 else 1.0
                 
                 s_t, s_m = prices_1y[t].dropna(), market_data[benchmark].dropna()
-                ret_6m = (s_t.iloc[-1]/s_t.iloc[-126]) - 1 if len(s_t)>=126 else (s_t.iloc[-1]/s_t.iloc[0]) - 1
-                mkt_ret_6m = (s_m.iloc[-1]/s_m.iloc[-126]) - 1 if len(s_m)>=126 else (s_m.iloc[-1]/s_m.iloc[0]) - 1
+                
+                if len(s_t) >= 126 and len(s_m) >= 126:
+                    ret_6m = (s_t.iloc[-1]/s_t.iloc[-126]) - 1
+                    mkt_ret_6m = (s_m.iloc[-1]/s_m.iloc[-126]) - 1
+                elif len(s_t) > 0 and len(s_m) > 0:
+                    ret_6m = (s_t.iloc[-1]/s_t.iloc[0]) - 1
+                    mkt_ret_6m = (s_m.iloc[-1]/s_m.iloc[0]) - 1
+                else:
+                    ret_6m, mkt_ret_6m = 0.0, 0.0
+                    
                 residual_mom = ret_6m - (beta * mkt_ret_6m)
-            except: residual_mom = 0.0
+            except: 
+                residual_mom = 0.0
             
             metrics.append({'Ticker': t, 'Residual_Mom': residual_mom})
-            rsi_data[t] = calculate_rsi(prices_1y[t].dropna()).iloc[-1] if len(prices_1y[t].dropna()) > 14 else 50.0
-            sr_data[t] = find_sr_levels(prices_1y[t].dropna())
+            
+            clean_series = prices_1y[t].dropna()
+            rsi_data[t] = calculate_rsi(clean_series).iloc[-1] if len(clean_series) > 14 else 50.0
+            sr_data[t] = find_sr_levels(clean_series)
             
         df_metrics = pd.merge(pd.DataFrame(metrics), df_fundamentals, on='Ticker')
+        
         z_mom = calc_zscore(df_metrics['Residual_Mom']).fillna(0)
         z_quality = (calc_zscore(df_metrics['ROA']).fillna(0) + calc_zscore(df_metrics['Margin']).fillna(0)) / 2
         z_value = (calc_zscore(df_metrics['FCF_Yield']).fillna(0) + (calc_zscore(df_metrics['PEG']).fillna(0) * -1)) / 2
