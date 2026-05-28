@@ -353,7 +353,8 @@ if st.session_state.get('run_quant_engine', False):
         mc3.metric("กำไร/ขาดทุนสะสม (Unrealized P&L)", f"฿ {total_pl:,.2f}", f"{total_pl_pct:,.2f}%")
         
         # จัด Format ตารางให้ดูง่าย มีสีสัน
-        styled_perf = perf_df.style.applymap(lambda x: 'color: #2ca02c' if x > 0 else 'color: #d62728' if x < 0 else '', subset=['Unrealized_P&L', 'P&L_%']).format({'Avg_Cost': '฿{:.2f}', 'Total_Cost': '฿{:.2f}', 'Market_Value': '฿{:.2f}', 'Unrealized_P&L': '฿{:.2f}', 'P&L_%': '{:.2f}%'})
+        # จัด Format ตารางให้ดูง่าย มีสีสัน
+        styled_perf = perf_df.style.map(lambda x: 'color: #2ca02c' if x > 0 else 'color: #d62728' if x < 0 else '', subset=['Unrealized_P&L', 'P&L_%']).format({'Avg_Cost': '฿{:.2f}', 'Total_Cost': '฿{:.2f}', 'Market_Value': '฿{:.2f}', 'Unrealized_P&L': '฿{:.2f}', 'P&L_%': '{:.2f}%'})
         st.dataframe(styled_perf, use_container_width=True, hide_index=True)
         st.markdown("---")
 
