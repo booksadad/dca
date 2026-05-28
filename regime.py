@@ -17,10 +17,8 @@ class MarketRegimeHMM:
     @st.cache_data(ttl=86400)
     def fetch_macro_features(period="2y"): 
         tickers = ["SPY", "^VIX", "^TNX", "^FVX", "HYG", "LQD"]
-        # 🛠️ THE FIX 1: โหลดแบบปกติ ไม่ใช้ group_by='ticker' เพื่อเลี่ยงบั๊กใน yfinance
-        data = yf.download(tickers, period=period, threads=True)
+        data = yf.download(tickers, period=period, threads=True, progress=False)
         
-        # 🛠️ THE FIX 2: ดึงเฉพาะราคา Close ออกมาอย่างปลอดภัย
         if isinstance(data.columns, pd.MultiIndex):
             close_data = data['Close']
         else:
@@ -28,7 +26,7 @@ class MarketRegimeHMM:
             
         df = pd.DataFrame()
         
-        # 🛠️ THE FIX 3: ใช้ ffill() อุดรอยรั่ววันหยุดตลาดพันธบัตร ป้องกัน dropna() ลบข้อมูลทิ้งทั้งตาราง
+        # ใช้ ffill() อุดรอยรั่ววันหยุดตลาดพันธบัตร
         df['VIX'] = close_data['^VIX'].ffill()
         df['SPY_Ret'] = close_data['SPY'].ffill().pct_change()
         df['Realized_Vol'] = df['SPY_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
@@ -40,7 +38,6 @@ class MarketRegimeHMM:
 
     @st.cache_data(ttl=86400)
     def expanding_fit_predict(_self, df_features, min_train_days=126):
-        # 🛠️ THE FIX 4: ดักจับกรณีข้อมูลถูกลบจนเหลือน้อยเกินไป ป้องกัน ValueError (0 samples)
         if len(df_features) < min_train_days + 10:
             fallback = pd.DataFrame(index=df_features.index)
             fallback['P_BULL'] = 0.5
@@ -68,11 +65,41 @@ class MarketRegimeHMM:
     def apply_transition_smoothing(self, df_probs, alpha=0.25):
         return df_probs.ewm(alpha=alpha, adjust=False).mean()
 
+    # ==========================================
+    # 🌊 PRIORITY 3: HYSTERESIS BAND (ลด Whipsaw)
+    # ==========================================
+    def apply_hysteresis(self, df_probs, upper_threshold=0.70, lower_threshold=0.30):
+        states = []
+        current_state = "BULL" # สมมติจุดเริ่มต้น
+        
+        for p_panic in df_probs['P_PANIC']:
+            if current_state == "BULL":
+                if p_panic >= upper_threshold: current_state = "PANIC"
+            elif current_state == "PANIC":
+                if p_panic <= lower_threshold: current_state = "BULL"
+            states.append(current_state)
+            
+        df_probs['HMM_State'] = states
+        df_probs['Adj_P_PANIC'] = [1.0 if s == "PANIC" else 0.0 for s in states]
+        df_probs['Adj_P_BULL'] = [1.0 if s == "BULL" else 0.0 for s in states]
+        
+        return df_probs
+
 class DynamicFactorAllocator:
     def __init__(self):
         self.w_bull = {'Mom': 0.50, 'Qual': 0.30, 'Val': 0.20}
         self.w_panic = {'Mom': 0.10, 'Qual': 0.60, 'Val': 0.30}
         
-    def calculate_weights(self, smoothed_probs):
-        b, p = smoothed_probs['P_BULL'].iloc[-1], smoothed_probs['P_PANIC'].iloc[-1]
-        return {'Mom': b*0.5+p*0.1, 'Qual': b*0.3+p*0.6, 'Val': b*0.2+p*0.3, 'P_BULL': b, 'P_PANIC': p}
+    def calculate_weights(self, df_probs_with_hysteresis):
+        # ใช้ความน่าจะเป็นที่ผ่านความเฉื่อยแล้วมาถ่วง Factor
+        b = df_probs_with_hysteresis['Adj_P_BULL'].iloc[-1]
+        p = df_probs_with_hysteresis['Adj_P_PANIC'].iloc[-1]
+        
+        return {
+            'Mom': (b * self.w_bull['Mom']) + (p * self.w_panic['Mom']), 
+            'Qual': (b * self.w_bull['Qual']) + (p * self.w_panic['Qual']), 
+            'Val': (b * self.w_bull['Val']) + (p * self.w_panic['Val']), 
+            'P_BULL': b, 
+            'P_PANIC': p,
+            'Current_State': df_probs_with_hysteresis['HMM_State'].iloc[-1]
+        }
