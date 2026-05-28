@@ -1,0 +1,30 @@
+name: QuantHQ DCA Auto Alert
+
+on:
+  schedule:
+    # รันทุกๆ วันพุธ (3) และ วันเสาร์ (6)
+    # เวลา 01:00 UTC (ซึ่งตรงกับเวลา 08:00 น. เช้าประเทศไทยเป๊ะ!)
+    - cron: '0 1 * * 3,6'
+  workflow_dispatch: # อันนี้คือปุ่มเวทมนตร์ ให้เรากดเทสต์รันแบบ Manual ได้เอง
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests yfinance pytz
+
+      - name: Run Morning Radar Bot
+        env:
+          # ดึงความลับจาก GitHub Secrets ส่งให้โค้ด Python
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python auto_alert_bot.py
