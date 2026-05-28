@@ -447,3 +447,11 @@ if st.session_state.get('run_quant_engine', False):
             col2.metric("ซื้อสะสม (บาท)", f"{history_df[history_df['Action']=='BUY']['Amount_THB'].sum():,.0f}")
             col3.metric("ขายสะสม (บาท)", f"{history_df[history_df['Action']=='SELL']['Amount_THB'].sum():,.0f}")
             st.dataframe(history_df.sort_values("Date", ascending=False), use_container_width=True, hide_index=True)
+            
+            # --- ปุ่มสำหรับกด Reset ล้างไพ่ ---
+            st.markdown("---")
+            if st.button("🗑️ ล้างประวัติการเทรดทั้งหมด (Reset Trade Log)", type="secondary"):
+                os.remove(LOG_FILE)
+                st.session_state['logged_this_run'] = False
+                st.success("ล้างประวัติการเทรดเรียบร้อยแล้ว!")
+                st.rerun()
