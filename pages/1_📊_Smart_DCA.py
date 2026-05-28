@@ -520,86 +520,133 @@ if st.session_state.get('run_quant_engine', False):
     st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES")
     st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'Risk_Adj_Alpha', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'Risk_Adj_Alpha': 'Risk-adj Alpha', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
-    # ==========================================
-    # 📝 TRADE LOGGING SYSTEM 
+   # ==========================================
+    # 🗄️ PHASE 2: PORTFOLIO STATE MANAGEMENT (SQLite & JSONL Snapshot)
     # ==========================================
     st.markdown("---")
-    st.subheader("💾 บันทึกประวัติการทำรายการ (Trade Logger)")
-    
-    if st.button("✅ ยืนยันคำสั่งและบันทึกประวัติลง CSV", type="primary"):
+    st.subheader("📝 ระบบจัดการฐานข้อมูลและสแนปช็อต (Database & Snapshot)")
+
+    DB_FILE = "quanthq_trades.db"
+    JSONL_FILE = "portfolio_history.jsonl"
+
+    # ฟังก์ชันเริ่มต้นสร้างตาราง SQLite ถ้ายังไม่มี
+    def init_db():
+        import sqlite3
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                ticker TEXT,
+                action TEXT,
+                amount_thb REAL,
+                price REAL,
+                shares REAL,
+                reason TEXT,
+                regime TEXT,
+                p_bull REAL,
+                p_panic REAL,
+                alpha_score REAL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    init_db()
+
+    if st.button("text", type="primary", key="confirm_and_log_db"):
+        pass # ลอจิกปุ่มเดิมจะถูกรวมในปุ่มยืนยันคำสั่งด้านล่าง
+
+    # แก้ไขปุ่มยืนยันคำสั่งเดิมให้บันทึกเข้า SQLite และทำ JSONL Snapshot
+    if st.button("✅ ยืนยันคำสั่งและบันทึกประวัติลงระบบฐานข้อมูล", type="primary"):
         if not st.session_state.get('logged_this_run', False):
+            import sqlite3
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
             action_df = st.session_state['out_table']
             trades = action_df[(action_df['ซื้อ'] > 0) | (action_df['ขาย'] > 0)].copy()
             regime_data = st.session_state.get('current_regime_weights', {})
             prices_dict = st.session_state.get('current_prices', {})
             
+            # 1️⃣ บันทึกข้อมูลเข้า SQLite Database
             if not trades.empty:
-                log_data = []
+                conn = sqlite3.connect(DB_FILE)
                 for _, row in trades.iterrows():
                     alpha_lookup = round(st.session_state['top_alpha_table'].set_index('Ticker')['Alpha_Score'].get(row['หุ้น'], 0), 3)
                     exec_price = prices_dict.get(row['หุ้น'], 1.0)
                     
                     if row['ซื้อ'] > 0:
                         shares_bought = round(row['ซื้อ'] / exec_price, 6)
-                        log_data.append({'Date': current_time, 'Ticker': row['หุ้น'], 'Action': 'BUY', 'Amount_THB': round(row['ซื้อ'], 2), 'Price': round(exec_price, 2), 'Shares': shares_bought, 'Reason': row['เหตุผล (Action)'], 'Regime': regime_data.get('Current_State', 'N/A'), 'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1), 'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1), 'Alpha_Score': alpha_lookup})
+                        conn.execute("""
+                            INSERT INTO trade_log (timestamp, ticker, action, amount_thb, price, shares, reason, regime, p_bull, p_panic, alpha_score)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (current_time, row['หุ้น'], 'BUY', round(row['ซื้อ'], 2), round(exec_price, 2), shares_bought, row['เหตุผล (Action)'], regime_data.get('Current_State', 'N/A'), round(regime_data.get('P_BULL', 0) * 100, 1), round(regime_data.get('P_PANIC', 0) * 100, 1), alpha_lookup))
+                    
                     if row['ขาย'] > 0:
                         shares_sold = round(row['ขาย'] / exec_price, 6)
-                        log_data.append({'Date': current_time, 'Ticker': row['หุ้น'], 'Action': 'SELL', 'Amount_THB': round(row['ขาย'], 2), 'Price': round(exec_price, 2), 'Shares': shares_sold, 'Reason': row['เหตุผล (Action)'], 'Regime': regime_data.get('Current_State', 'N/A'), 'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1), 'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1), 'Alpha_Score': alpha_lookup})
-                
-                new_log_df = pd.DataFrame(log_data)
-                
-                tmp_log = LOG_FILE + ".tmp"
-                if os.path.exists(LOG_FILE):
-                    existing_log = pd.read_csv(LOG_FILE)
-                    updated_log = pd.concat([existing_log, new_log_df], ignore_index=True)
-                else:
-                    updated_log = new_log_df
-                updated_log.to_csv(tmp_log, index=False)
-                shutil.move(tmp_log, LOG_FILE)
-                
+                        conn.execute("""
+                            INSERT INTO trade_log (timestamp, ticker, action, amount_thb, price, shares, reason, regime, p_bull, p_panic, alpha_score)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (current_time, row['หุ้น'], 'SELL', round(row['ขาย'], 2), round(exec_price, 2), shares_sold, row['เหตุผล (Action)'], regime_data.get('Current_State', 'N/A'), round(regime_data.get('P_BULL', 0) * 100, 1), round(regime_data.get('P_PANIC', 0) * 100, 1), alpha_lookup))
+                conn.commit()
+                conn.close()
+
+                # อัปเดตมูลค่าพอร์ตในไฟล์ตั้งต้นเดิม (คงไว้เพื่อซิงค์ตารางหลัก)
                 if os.path.exists(PORTFOLIO_FILE):
                     port_df_current = pd.read_csv(PORTFOLIO_FILE)
                     for _, row in trades.iterrows():
                         t = row['หุ้น']
                         net_change = row['ซื้อ'] - row['ขาย']
-                        
                         idx = port_df_current['รายชื่อหุ้น'] == t
                         if idx.any():
                             port_df_current.loc[idx, 'ยอดเงินปัจจุบัน (บาท)'] += net_change
                         elif row['ซื้อ'] > 0:
                             new_row = pd.DataFrame([{'รายชื่อหุ้น': t, 'ยอดเงินปัจจุบัน (บาท)': row['ซื้อ']}])
                             port_df_current = pd.concat([port_df_current, new_row], ignore_index=True)
-                            
                     tmp_port = PORTFOLIO_FILE + ".tmp"
                     port_df_current.to_csv(tmp_port, index=False)
                     shutil.move(tmp_port, PORTFOLIO_FILE)
 
-                st.session_state['logged_this_run'] = True
-                st.success(f"💾 บันทึกประวัติสำเร็จ {len(new_log_df)} รายการ!")
-                st.rerun() 
-            else:
-                st.session_state['logged_this_run'] = True
-                st.info("รอบนี้ไม่มีคำสั่งซื้อขายที่ต้องบันทึกครับ (Hold รักษาสมดุล)")
+            # 2️⃣ บันทึก Snapshot ลงไฟล์ JSONL (Append-only History Ledger)
+            snapshot = {
+                "date": current_time,
+                "holdings": current_thb,
+                "total_value": round(sum(current_thb.values()), 2),
+                "regime": regime_data.get('Current_State', 'N/A'),
+                "p_panic": round(regime_data.get('P_PANIC', 0) * 100, 1)
+            }
+            with open(JSONL_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+
+            st.session_state['logged_this_run'] = True
+            st.success("🗄️ บันทึกประวัติลงฐานข้อมูล SQLite และถ่ายเอกสาร Snapshot สำเร็จ!")
+            st.rerun()
         else:
             st.warning("⚠️ รอบนี้บันทึกไปแล้วครับ — กด 'รันระบบ' ใหม่ก่อนบันทึกรอบถัดไป")
 
-    if os.path.exists(LOG_FILE):
-        with st.expander("📂 ดูประวัติการเทรดย้อนหลังทั้งหมด (Trade Log)"):
-            history_df = pd.read_csv(LOG_FILE)
+    # ส่วนแสดงประวัติฐานข้อมูลในหน้าเว็บ
+    import sqlite3
+    if os.path.exists(DB_FILE):
+        with st.expander("📂 เปิดดูสมุดบัญชีสถาบัน (SQLite Trade Log)"):
+            conn = sqlite3.connect(DB_FILE)
+            db_df = pd.read_sql_query("SELECT * FROM trade_log ORDER BY id DESC", conn)
+            conn.close()
+            
             col1, col2, col3 = st.columns(3)
-            col1.metric("รายการทั้งหมด", len(history_df))
-            col2.metric("ซื้อสะสม (บาท)", f"{history_df[history_df['Action']=='BUY']['Amount_THB'].sum():,.0f}")
-            col3.metric("ขายสะสม (บาท)", f"{history_df[history_df['Action']=='SELL']['Amount_THB'].sum():,.0f}")
-            st.dataframe(history_df.sort_values("Date", ascending=False), use_container_width=True, hide_index=True)
+            col1.metric("จำนวน Transaction ใน DB", len(db_df))
+            col2.metric("ซื้อสะสมทั้งหมด", f"฿ {db_df[db_df['action']=='BUY']['amount_thb'].sum():,.2f}")
+            col3.metric("ขายสะสมทั้งหมด", f"฿ {db_df[db_df['action']=='SELL']['amount_thb'].sum():,.2f}")
+            
+            st.dataframe(db_df, use_container_width=True, hide_index=True)
             
             st.markdown("---")
-            if st.button("🗑️ ล้างประวัติการเทรดทั้งหมด (Reset Trade Log)", type="secondary"):
-                os.remove(LOG_FILE)
+            if st.button("🗑️ ล้างฐานข้อมูลทั้งหมด (Reset SQLite Database)", type="secondary"):
+                if os.path.exists(DB_FILE): os.remove(DB_FILE)
+                if os.path.exists(JSONL_FILE): os.remove(JSONL_FILE)
                 st.session_state['logged_this_run'] = False
-                st.success("ล้างประวัติการเทรดเรียบร้อยแล้ว!")
+                st.success("เคลียร์ฐานข้อมูลและไฟล์ Snapshot เรียบร้อยแล้ว!")
                 st.rerun()
-
     # ==========================================
     # 📲 NOTIFICATION SYSTEM (Discord Alerts)
     # ==========================================
