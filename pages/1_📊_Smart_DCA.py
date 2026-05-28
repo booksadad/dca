@@ -3,7 +3,8 @@ import pandas as pd
 import numpy as np
 import os, sys, json
 import warnings
-import plotly.express as px  # เพิ่ม plotly สำหรับทำกราฟ Sector Exposure
+from datetime import datetime
+import plotly.express as px
 
 # ==========================================
 # 🛠️ ทะลวงกำแพงโฟลเดอร์
@@ -27,12 +28,13 @@ warnings.filterwarnings("ignore")
 PORTFOLIO_FILE = "my_portfolio_data.csv"
 
 # ==========================================
-# 💾 ฐานข้อมูลและ Baseline
+# 💾 ฐานข้อมูลและ Baseline (อัปเดต Bug #3: แยกกลุ่ม BRK-B)
 # ==========================================
 SECTOR_DB = {
     "💻 Tech": ["NVDA", "MSFT", "GOOG", "META", "CSCO", "TXN", "AAPL", "AMD", "PLTR", "AVGO", "RKLB"],
     "🛍️ Consumer": ["COST", "KO", "PEP", "BLK", "MELI", "V", "MA", "WMT"],
-    "🏦 Finance": ["BRK-B", "JPM"],
+    "🏦 Finance": ["JPM"],
+    "🛡️ Diversified (BRK)": ["BRK-B"],
     "🩺 Health": ["UNH", "JNJ", "ISRG", "LLY", "ABBV"],
     "🚗 EV": ["TSLA", "UBER", "TM"],
     "🌿 Green": ["FSLR", "ENPH", "NEE", "SEDG"]
@@ -126,6 +128,13 @@ if st.session_state.get('run_quant_engine', False):
         rsi_data, sr_data = {}, {}
         spy_ret = df_macro['SPY_Ret'].tail(252).reindex(returns_1y.index).fillna(0)
         
+        # 🟢 อัปเดต Bug #1: Dynamic Alpha Decay
+        if os.path.exists(PORTFOLIO_FILE):
+            last_mod_time = datetime.fromtimestamp(os.path.getmtime(PORTFOLIO_FILE))
+            days_since_last = max(1, (datetime.now() - last_mod_time).days)
+        else:
+            days_since_last = 3
+        
         for t in final_scan_list:
             try:
                 cov = returns_1y[t].cov(spy_ret)
@@ -133,8 +142,14 @@ if st.session_state.get('run_quant_engine', False):
                 beta = cov / var if var > 0 else 1.0
                 
                 s_t = prices_1y[t].dropna()
-                ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1 if len(s_t)>20 else 0.0
-                mkt_ret_6m = (1 + spy_ret.tail(126)).prod() - 1 
+                
+                # 🔴 อัปเดต Bug #2: Momentum Skip t-1 (หลบ Short-term Reversal)
+                if len(s_t) > 147: 
+                    ret_6m = (s_t.iloc[-22] / s_t.iloc[-147]) - 1
+                else:
+                    ret_6m = 0.0
+                    
+                mkt_ret_6m = (1 + spy_ret.iloc[-147:-22]).prod() - 1 if len(spy_ret) > 147 else 0.0
                 residual_mom = ret_6m - (beta * mkt_ret_6m)
             except: 
                 residual_mom, beta = 0.0, 1.0
@@ -158,7 +173,7 @@ if st.session_state.get('run_quant_engine', False):
         
         w_m, w_q, w_v = regime_weights['Mom'], regime_weights['Qual'], regime_weights['Val']
         df_metrics['Alpha_Score'] = (z_mom * w_m) + (z_quality * w_q) + (z_value * w_v)
-        df_metrics['Alpha_Score'] = df_metrics['Alpha_Score'].apply(lambda x: calculate_alpha_decay(x, days_passed=3, half_life_days=30))
+        df_metrics['Alpha_Score'] = df_metrics['Alpha_Score'].apply(lambda x: calculate_alpha_decay(x, days_passed=days_since_last, half_life_days=30))
         df_metrics['Max_Drawdown'] = df_metrics['Ticker'].map(max_dd)
         
         final_df = df_metrics.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
@@ -202,8 +217,6 @@ if st.session_state.get('run_quant_engine', False):
                 if row['Alpha_Score'] < -0.5:
                     reasons.append(f"Alpha ติดลบ ({row['Alpha_Score']:.2f})")
                     severity = 'REDUCE'
-                
-                # (ชั่วคราว: ยกเลิก Historical MDD ไปก่อนตามแผน)
                 
                 # Regime Panic + หุ้นซิ่ง + Alpha แย่ = หนี
                 beta = row.get('Beta', 1.0)
