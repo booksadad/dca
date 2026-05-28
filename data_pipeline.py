@@ -56,5 +56,9 @@ class InstitutionalDataPipeline:
         return pd.DataFrame(validated_dict)
 
     def filter_universe(self):
-        # โค้ดกรองหุ้นขยะ (ADV / Price Floor) ของเดิม...
-        return self.universe
+        # สมมติฐานว่าส่งคืน Universe เดิม (สามารถใส่ Logic กรอง ADV เพิ่มเติมได้ที่นี่)
+        return self.universe 
+        
+    def clean_fundamentals(self, df):
+        # ล้างค่า NaN เบื้องต้นในปัจจัยพื้นฐาน
+        return df.fillna(0)
