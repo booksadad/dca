@@ -212,7 +212,7 @@ if st.session_state.get('run_quant_engine', False):
         top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
 
         # ==========================================
-        # 🚨 DECISION 3: Exit Rules
+        # 🚨 DECISION 3: Exit Rules (Fixed Position Loss Bug)
         # ==========================================
         def evaluate_exit_signals(df, p_panic):
             exit_signals = []
@@ -221,21 +221,26 @@ if st.session_state.get('run_quant_engine', False):
                 reasons = []
                 severity = 'HOLD'
                 
+                # --- Exit 1: Alpha Deterioration ---
+                # ถ้าหุ้นหมดความเก่ง (Alpha ติดลบชัดเจน) ให้เริ่มลดสัดส่วน
                 if row['Alpha_Score'] < -0.5:
                     reasons.append(f"Alpha ติดลบ ({row['Alpha_Score']:.2f})")
                     severity = 'REDUCE'
                     
-                dd_threshold = -35.0 if row['Max_Drawdown'] < -30.0 else -25.0
-                if row['Max_Drawdown'] < dd_threshold:
-                    reasons.append(f"Drawdown เกิน threshold ({row['Max_Drawdown']:.1f}%)")
-                    severity = 'EXIT'
-                    
+                # 🛑 (ปิดโค้ดส่วน Historical MDD Stop-loss ตรงนี้ทิ้งไปก่อน 
+                # เพราะเราต้องใช้ "%ขาดทุนจริง" ไม่ใช่ "ประวัติหุ้นร่วง")
+
+                # --- Exit 3: Regime + High Beta Combination ---
+                # ถ้าตลาด Panic หนัก + หุ้นตัวนั้นผันผวนสูงมาก + โมเมนตัมกำลังแย่ = หนีตาย!
                 beta = row.get('Beta', 1.0)
                 if p_panic > 0.7 and beta > 1.5 and row['Alpha_Score'] < 0:
                     reasons.append(f"PANIC + High Beta ({beta:.1f}) + Alpha ติดลบ")
-                    severity = 'REDUCE'
+                    severity = 'EXIT'
                     
                 if reasons:
+                    # ถ้าโดนหลายข้อ ให้ยึด EXIT เป็นหลัก
+                    if severity != 'EXIT' and any('PANIC' in r for r in reasons):
+                         severity = 'EXIT'
                     exit_signals.append({'Ticker': t, 'Severity': severity, 'Reasons': reasons})
             return exit_signals
         
