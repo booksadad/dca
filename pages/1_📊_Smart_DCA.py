@@ -114,11 +114,33 @@ if st.session_state.get('run_quant_engine', False):
         final_scan_list = list(set(my_portfolio + clean_universe))
         
         raw_prices = pipeline.fetch_bulk_market_data(final_scan_list)
+        
+        # ==========================================
+        # 🛡️ GUARDRAIL 1: Data Freshness Check
+        # ==========================================
+        last_date = raw_prices.index[-1]
+        today = pd.Timestamp.now(tz='US/Eastern').normalize()
+        bdays_behind = np.busday_count(last_date.date(), today.date())
+        if bdays_behind > 2:
+            st.error(f"🚨 สัญญาณอันตราย! ข้อมูลตลาดเก่าเกินไป ({bdays_behind} วันทำการ) ระบบระงับการออกคำสั่งเทรดเพื่อความปลอดภัย!")
+            st.stop()
+
+        # ==========================================
+        # 🛡️ GUARDRAIL 2: FX Rate Fetching
+        # ==========================================
+        status_box.update(label="💱 ดึงอัตราแลกเปลี่ยน (USD/THB) ล่าสุด...")
+        try:
+            fx_data = yf.download("THB=X", period="5d", progress=False)
+            current_fx = float(fx_data['Close'].dropna().iloc[-1])
+        except:
+            current_fx = 36.50 # Fallback ยามฉุกเฉิน
+            st.warning(f"⚠️ ดึงค่าเงินไม่สำเร็จ ใช้ค่าประมาณ {current_fx} THB/USD")
+        st.session_state['current_fx'] = current_fx
+
         prices_1y = raw_prices.tail(252)
         returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
-        # 💾 เก็บราคาล่าสุดไว้ใช้สำหรับคำนวณ Shares ใน Logger และ P&L
         current_prices_dict = prices_1y.iloc[-1].to_dict()
         st.session_state['current_prices'] = current_prices_dict
         
@@ -128,7 +150,7 @@ if st.session_state.get('run_quant_engine', False):
         df_clean_fundamentals = pipeline.clean_fundamentals(df_fundamentals)
         
         metrics = []
-        rsi_data, sr_data = {}, {}
+        rsi_data, sr_data = {} , {}
         spy_ret = df_macro['SPY_Ret'].tail(252).reindex(returns_1y.index).fillna(0)
         
         if os.path.exists(PORTFOLIO_FILE):
@@ -242,6 +264,12 @@ if st.session_state.get('run_quant_engine', False):
         port_df.loc[mask_small_diff & mask_not_selling, 'Target_%'] = port_df.loc[mask_small_diff & mask_not_selling, 'Weight_%']
         port_df.loc[mask_small_diff & mask_not_selling, 'Action_Reason'] = "🔒 น้ำหนักไม่ถึงเกณฑ์สับเปลี่ยน (5%)"
         
+        # ==========================================
+        # 🛡️ GUARDRAIL 3: Concentration Limit (Hard Stop ที่ 35%)
+        # ==========================================
+        MAX_WEIGHT_LIMIT = 35.0
+        port_df['Target_%'] = port_df['Target_%'].clip(upper=MAX_WEIGHT_LIMIT)
+        
         total_target = port_df['Target_%'].sum()
         if total_target > 0: port_df['Target_%'] = (port_df['Target_%'] / total_target) * 100.0
 
@@ -249,19 +277,36 @@ if st.session_state.get('run_quant_engine', False):
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current']
         port_df['Buy_Amount'] = 0.0
 
+        # ==========================================
+        # 🟢 DECISION 1 & Commission Check
+        # ==========================================
         port_df['Regime_Weight'] = 1.0 - (P_PANIC * port_df['Beta'].clip(0, 2) / 2)
         port_df['Weighted_Deficit'] = port_df['Deficit'] * port_df['Regime_Weight']
         
-        buy_mask = (port_df['Weighted_Deficit'] > min_order_thb) & (port_df['Alpha_Score'] > 0) & mask_not_selling
+        buy_mask = (port_df['Weighted_Deficit'] > 0) & (port_df['Alpha_Score'] > 0) & mask_not_selling
         mask_no_buy = (~buy_mask) & mask_not_selling
         
         port_df.loc[mask_no_buy & (port_df['Alpha_Score'] <= 0), 'Action_Reason'] = "🚫 งดซื้อ (Alpha ติดลบ)"
-        port_df.loc[mask_no_buy & (port_df['Alpha_Score'] > 0) & (port_df['Weighted_Deficit'] <= min_order_thb), 'Action_Reason'] = "🎯 ทุนเต็มเป้าหมายแล้ว"
+        port_df.loc[mask_no_buy & (port_df['Alpha_Score'] > 0), 'Action_Reason'] = "🎯 ทุนเต็มเป้าหมายแล้ว"
         
         sum_def = port_df.loc[buy_mask, 'Weighted_Deficit'].sum()
         if sum_def > 0: 
             port_df.loc[buy_mask, 'Buy_Amount'] = (port_df.loc[buy_mask, 'Weighted_Deficit'] / sum_def) * actual_budget
-            port_df.loc[buy_mask, 'Action_Reason'] = "🟢 ซื้อสะสม (DCA Approved)"
+            
+            # --- กรอง Commission < 2% ---
+            broker_fee_usd = 0.15 # สมมติใช้ Dime! ($0.15 ต่อไม้) เปลี่ยนค่าได้ถ้าย้ายโบรค
+            commission_thb = broker_fee_usd * current_fx
+            
+            for idx in port_df[buy_mask].index:
+                amt = port_df.loc[idx, 'Buy_Amount']
+                if amt < min_order_thb:
+                    port_df.loc[idx, 'Buy_Amount'] = 0.0
+                    port_df.loc[idx, 'Action_Reason'] = f"🚫 ยอดซื้อไม่ถึงขั้นต่ำ ({min_order_thb}฿)"
+                elif (commission_thb / amt) > 0.02:
+                    port_df.loc[idx, 'Buy_Amount'] = 0.0
+                    port_df.loc[idx, 'Action_Reason'] = f"🚫 สั่งระงับ (โดนค่าคอมกินเกิน 2%)"
+                else:
+                    port_df.loc[idx, 'Action_Reason'] = "🟢 ซื้อสะสม (ผ่านเกณฑ์ค่าคอม)"
         
         out = port_df.copy().rename(columns={'Ticker': 'หุ้น', 'Target_%': 'เป้า%', 'Current': 'ทุนเดิม', 'Buy_Amount': 'ซื้อ', 'Sell_Amount': 'ขาย', 'Action_Reason': 'เหตุผล (Action)'})
         out['MDD'] = out['Max_Drawdown'].apply(lambda x: f"{x:.1f}%")
