@@ -171,9 +171,18 @@ if st.session_state.get('run_quant_engine', False):
         z_quality = (two_pass_zscore(df_metrics, col_roa, 'Sector') + two_pass_zscore(df_metrics, col_margin, 'Sector')) / 2
         z_value = (two_pass_zscore(df_metrics, col_fcf_yield, 'Sector') + (two_pass_zscore(df_metrics, col_peg, 'Sector') * -1)) / 2
         
+        # ==========================================
+        # 🟡 SHOWCASE #6: Per-factor Alpha Decay 
+        # ==========================================
+        # สลายตัว Z-Score แต่ละตัวตาม Half-life ที่ต่างกัน ก่อนนำไปรวม
+        decayed_mom = z_mom.apply(lambda x: calculate_alpha_decay(x, days_passed=days_since_last, half_life_days=21))
+        decayed_val = z_value.apply(lambda x: calculate_alpha_decay(x, days_passed=days_since_last, half_life_days=45))
+        decayed_qual = z_quality.apply(lambda x: calculate_alpha_decay(x, days_passed=days_since_last, half_life_days=90))
+        
         w_m, w_q, w_v = regime_weights['Mom'], regime_weights['Qual'], regime_weights['Val']
-        df_metrics['Alpha_Score'] = (z_mom * w_m) + (z_quality * w_q) + (z_value * w_v)
-        df_metrics['Alpha_Score'] = df_metrics['Alpha_Score'].apply(lambda x: calculate_alpha_decay(x, days_passed=days_since_last, half_life_days=30))
+        
+        # ผสม Factor ที่ผ่านการทำ Decay แล้วเข้าด้วยกัน
+        df_metrics['Alpha_Score'] = (decayed_mom * w_m) + (decayed_qual * w_q) + (decayed_val * w_v)
         df_metrics['Max_Drawdown'] = df_metrics['Ticker'].map(max_dd)
         
         final_df = df_metrics.sort_values(by='Alpha_Score', ascending=False).reset_index(drop=True)
