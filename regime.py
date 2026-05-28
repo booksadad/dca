@@ -16,25 +16,41 @@ class MarketRegimeHMM:
     @staticmethod
     @st.cache_data(ttl=86400)
     def fetch_macro_features(period="2y"): 
+        cache_file = "fallback_macro_data.csv"
         tickers = ["SPY", "^VIX", "^TNX", "^FVX", "HYG", "LQD"]
-        data = yf.download(tickers, period=period, threads=True, progress=False)
         
-        if isinstance(data.columns, pd.MultiIndex):
-            close_data = data['Close']
-        else:
-            close_data = data
+        try:
+            data = yf.download(tickers, period=period, threads=True, progress=False)
+            if data.empty:
+                raise ValueError("Yahoo Finance Connection Failed")
+                
+            if isinstance(data.columns, pd.MultiIndex):
+                close_data = data['Close']
+            else:
+                close_data = data
+                
+            df = pd.DataFrame()
             
-        df = pd.DataFrame()
-        
-        # ใช้ ffill() อุดรอยรั่ววันหยุดตลาดพันธบัตร
-        df['VIX'] = close_data['^VIX'].ffill()
-        df['SPY_Ret'] = close_data['SPY'].ffill().pct_change()
-        df['Realized_Vol'] = df['SPY_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
-        df['Vol_Premium'] = df['Realized_Vol'] - df['VIX']
-        df['Yield_Curve'] = close_data['^TNX'].ffill() - close_data['^FVX'].ffill()
-        df['Credit_Stress'] = close_data['HYG'].ffill() / close_data['LQD'].ffill()
-        
-        return df.dropna()
+            # ใช้ ffill() อุดรอยรั่ววันหยุดตลาดพันธบัตร
+            df['VIX'] = close_data['^VIX'].ffill()
+            df['SPY_Ret'] = close_data['SPY'].ffill().pct_change()
+            df['Realized_Vol'] = df['SPY_Ret'].rolling(window=20).std() * np.sqrt(252) * 100
+            df['Vol_Premium'] = df['Realized_Vol'] - df['VIX']
+            df['Yield_Curve'] = close_data['^TNX'].ffill() - close_data['^FVX'].ffill()
+            df['Credit_Stress'] = close_data['HYG'].ffill() / close_data['LQD'].ffill()
+            
+            final_df = df.dropna()
+            final_df.to_csv(cache_file)
+            return final_df
+            
+        except Exception as e:
+            st.warning(f"⚠️ Macro Data Error ({e}): กำลังดึง Data สำรองมาใช้งาน")
+            import os
+            if os.path.exists(cache_file):
+                return pd.read_csv(cache_file, index_col=0, parse_dates=True)
+            else:
+                st.error("🚨 ระบบล่ม: ไม่มี Macro Cache สำรอง")
+                st.stop()
 
     @st.cache_data(ttl=86400)
     def expanding_fit_predict(_self, df_features, min_train_days=126):
