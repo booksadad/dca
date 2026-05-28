@@ -5,6 +5,7 @@ import os, sys, json
 import warnings
 from datetime import datetime
 import plotly.express as px
+import shutil  # เพิ่มโมดูลนี้สำหรับทำ Atomic Write
 
 # ==========================================
 # 🛠️ ทะลวงกำแพงโฟลเดอร์
@@ -47,7 +48,6 @@ DEFAULT_PORTFOLIO = {"BRK-B": 1361.56, "NVDA": 1128.72, "JNJ": 745.42, "TSLA": 4
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
 st.title("🛡️ QUANT-HQ DCA (Institutional Execution)")
 
-# --- Session State Management ---
 if 'entry_candidates_history' not in st.session_state: st.session_state['entry_candidates_history'] = {}
 if 'rotation_history' not in st.session_state: st.session_state['rotation_history'] = {}
 
@@ -78,16 +78,17 @@ for t in my_portfolio:
     default_rows.append({"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": val})
 
 df_holdings_edited = st.data_editor(pd.DataFrame(default_rows), use_container_width=True, hide_index=True)
+# เซฟค่าจาก UI ลงไฟล์ (จังหวะปกติ)
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
 current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
 # ==========================================
-# 🚀 CORE ENGINE (บวก Double-Log Prevention)
+# 🚀 CORE ENGINE 
 # ==========================================
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     st.session_state['run_quant_engine'] = True
     st.session_state['matrix_calculated'] = False 
-    st.session_state['logged_this_run'] = False  # Reset flag เมื่อรันใหม่
+    st.session_state['logged_this_run'] = False 
 
 if st.session_state.get('run_quant_engine', False):
     if not st.session_state.get('matrix_calculated', False):
@@ -100,7 +101,6 @@ if st.session_state.get('run_quant_engine', False):
         regime_engine = MarketRegimeHMM(n_states=2)
         factor_allocator = DynamicFactorAllocator()
         
-        # --- Layer 3: Regime ---
         status_box.update(label="📡 Layer 3: ดึงข้อมูล Macro และคำนวณ HMM...")
         df_macro = regime_engine.fetch_macro_features()
         raw_probs = regime_engine.expanding_fit_predict(df_macro)
@@ -109,7 +109,6 @@ if st.session_state.get('run_quant_engine', False):
         regime_weights = factor_allocator.calculate_weights(hysteresis_probs)
         P_PANIC = regime_weights.get('P_PANIC', 0.0)
         
-        # --- Layer 1: Data ---
         status_box.update(label="🧼 Layer 1: ร่อนหุ้นผ่าน Sanity Check Pipeline...")
         clean_universe = pipeline.filter_universe()
         final_scan_list = list(set(my_portfolio + clean_universe))
@@ -119,7 +118,6 @@ if st.session_state.get('run_quant_engine', False):
         returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
-        # --- Layer 2: Factors ---
         status_box.update(label="🧬 Layer 2: สกัด Factor และคำนวณ Z-Score...")
         from data_loader import fetch_fundamental_data
         df_fundamentals = fetch_fundamental_data(final_scan_list)
@@ -142,7 +140,6 @@ if st.session_state.get('run_quant_engine', False):
                 beta = cov / var if var > 0 else 1.0
                 
                 s_t = prices_1y[t].dropna()
-                
                 if len(s_t) > 147: 
                     ret_6m = (s_t.iloc[-22] / s_t.iloc[-147]) - 1
                 else:
@@ -187,7 +184,6 @@ if st.session_state.get('run_quant_engine', False):
         port_df['Weight_%'] = (port_df['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
         current_weights_arr = (port_df['Current'] / total_port_value).fillna(0).values if total_port_value > 0 else np.zeros(len(port_df))
 
-        # --- Layer 4: Optimizer ---
         status_box.update(label="🏛️ Layer 4: Optimizer & Micro-Execution Gate...")
         if "Auto-Pilot" in engine_choice:
             opt_res, _ = run_institutional_black_litterman(
@@ -206,7 +202,6 @@ if st.session_state.get('run_quant_engine', False):
         port_df['Sell_Amount'] = 0.0
         port_df['Action_Reason'] = "⚖️ ถือรักษาสมดุล (รอรอบใหม่)" 
 
-        # --- DECISION 3: EXIT RULES ---
         def evaluate_exit_signals(df, p_panic):
             exit_signals = []
             for _, row in df.iterrows():
@@ -240,7 +235,6 @@ if st.session_state.get('run_quant_engine', False):
                 port_df.loc[idx, 'Sell_Amount'] = port_df.loc[idx, 'Current'] * 0.30
                 port_df.loc[idx, 'Action_Reason'] = f"🟡 ลดสัดส่วน 30% ({sig['Reasons'][0]})"
 
-        # --- Threshold Rebalancing ---
         MIN_DEVIATION = 5.0  
         mask_small_diff = (port_df['Target_%'] - port_df['Weight_%']).abs() < MIN_DEVIATION
         mask_not_selling = port_df['Sell_Amount'] == 0
@@ -255,7 +249,6 @@ if st.session_state.get('run_quant_engine', False):
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current']
         port_df['Buy_Amount'] = 0.0
 
-        # --- DECISION 1: DCA Allocation ---
         port_df['Regime_Weight'] = 1.0 - (P_PANIC * port_df['Beta'].clip(0, 2) / 2)
         port_df['Weighted_Deficit'] = port_df['Deficit'] * port_df['Regime_Weight']
         
@@ -281,7 +274,6 @@ if st.session_state.get('run_quant_engine', False):
         top_alpha_display['MDD'] = top_alpha_display['Max_Drawdown'].round(1).astype(str) + "%"
         top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
 
-        # --- DECISION 2: New Position ---
         def evaluate_new_entries(candidates_df, p_df, p_panic, m_port):
             if len(m_port) >= 10: return []
             avg_a = p_df['Alpha_Score'].mean() if not p_df.empty else 0
@@ -300,7 +292,6 @@ if st.session_state.get('run_quant_engine', False):
             if t not in new_entries: st.session_state['entry_candidates_history'][t] = 0
         st.session_state['confirmed_new_entries'] = [t for t, c in st.session_state['entry_candidates_history'].items() if c >= 2]
 
-        # --- DECISION 4: Rotation ---
         def evaluate_rotation(top_a_disp, p_panic, budget):
             cur = top_a_disp[top_a_disp['สถานะ'] == "💼 ถืออยู่"]
             out = top_a_disp[top_a_disp['สถานะ'] == "✨ เป้าหมายใหม่"]
@@ -324,13 +315,10 @@ if st.session_state.get('run_quant_engine', False):
             st.session_state['rotation_alert'] = rot_signal
         else: st.session_state['rotation_alert'] = None
 
-        # Data for Display & Logging
         t_exposure = port_df.groupby('Sector')['Target_%'].sum().reset_index()
         p_state = json.dumps({"market_regime": f"{regime_weights['Current_State']}", "proposed_buys": out[out['ซื้อ']>0][['หุ้น', 'ซื้อ']].to_dict('records')})
         
-        # เก็บค่า regime_weights ไว้ใน session_state เพื่อให้ Logger ดึงไปใช้ได้
         st.session_state['current_regime_weights'] = regime_weights
-
         st.session_state['regime_report'] = f"📊 HMM Regime -> State: {regime_weights['Current_State']} | 🐂 P(Bull): {regime_weights['P_BULL']*100:.1f}% | 🐻 P(Panic): {regime_weights['P_PANIC']*100:.1f}%"
         st.session_state['factor_mix'] = f"⚡ Dynamic Factors -> Mom: {w_m*100:.0f}% | Qual: {w_q*100:.0f}% | Val: {w_v*100:.0f}%"
         st.session_state['out_table'] = out
@@ -344,9 +332,6 @@ if st.session_state.get('run_quant_engine', False):
     st.info(st.session_state['regime_report'])
     st.success(st.session_state['factor_mix'])
     
-    # ==========================================
-    # 📢 ALERTS (UI)
-    # ==========================================
     if st.session_state.get('exit_signals'):
         for sig in st.session_state['exit_signals']:
             if sig['Severity'] == 'EXIT': st.error(f"**🔴 EXIT SIGNAL:** {sig['Ticker']} — {' | '.join(sig['Reasons'])}")
@@ -362,7 +347,7 @@ if st.session_state.get('run_quant_engine', False):
         else: st.info(f"**⏳ PENDING ROTATION:** เล็งสับเปลี่ยน **{rot['sell']}** เข้า **{rot['buy']}** (รอรอบยืนยันถัดไป)")
 
     # ==========================================
-    # 📋 MAIN TABLES & CHARTS (UI)
+    # 📋 MAIN TABLES & CHARTS
     # ==========================================
     st.markdown("### 📋 2. ตาราง Quant Allocation (Execution Log)")
     st.dataframe(st.session_state['out_table'][['หุ้น', 'เหตุผล (Action)', 'MDD', 'RSI', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
@@ -378,7 +363,7 @@ if st.session_state.get('run_quant_engine', False):
     st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'Risk_Adj_Alpha', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'Risk_Adj_Alpha': 'Risk-adj Alpha', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
     # ==========================================
-    # 📝 TRADE LOGGING SYSTEM
+    # 📝 TRADE LOGGING SYSTEM (Atomic Write & Auto-Update)
     # ==========================================
     st.markdown("---")
     st.subheader("💾 บันทึกประวัติการทำรายการ (Trade Logger)")
@@ -398,41 +383,44 @@ if st.session_state.get('run_quant_engine', False):
                     alpha_lookup = round(st.session_state['top_alpha_table'].set_index('Ticker')['Alpha_Score'].get(row['หุ้น'], 0), 3)
                     
                     if row['ซื้อ'] > 0:
-                        log_data.append({
-                            'Date': current_time, 
-                            'Ticker': row['หุ้น'], 
-                            'Action': 'BUY', 
-                            'Amount_THB': round(row['ซื้อ'], 2), 
-                            'Reason': row['เหตุผล (Action)'],
-                            'Regime': regime_data.get('Current_State', 'N/A'),
-                            'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1),
-                            'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1),
-                            'Alpha_Score': alpha_lookup
-                        })
+                        log_data.append({'Date': current_time, 'Ticker': row['หุ้น'], 'Action': 'BUY', 'Amount_THB': round(row['ซื้อ'], 2), 'Reason': row['เหตุผล (Action)'], 'Regime': regime_data.get('Current_State', 'N/A'), 'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1), 'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1), 'Alpha_Score': alpha_lookup})
                     if row['ขาย'] > 0:
-                        log_data.append({
-                            'Date': current_time, 
-                            'Ticker': row['หุ้น'], 
-                            'Action': 'SELL', 
-                            'Amount_THB': round(row['ขาย'], 2), 
-                            'Reason': row['เหตุผล (Action)'],
-                            'Regime': regime_data.get('Current_State', 'N/A'),
-                            'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1),
-                            'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1),
-                            'Alpha_Score': alpha_lookup
-                        })
+                        log_data.append({'Date': current_time, 'Ticker': row['หุ้น'], 'Action': 'SELL', 'Amount_THB': round(row['ขาย'], 2), 'Reason': row['เหตุผล (Action)'], 'Regime': regime_data.get('Current_State', 'N/A'), 'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1), 'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1), 'Alpha_Score': alpha_lookup})
                 
                 new_log_df = pd.DataFrame(log_data)
                 
+                # 1️⃣ Atomic Write สำหรับ Trade Log
+                tmp_log = log_file + ".tmp"
                 if os.path.exists(log_file):
                     existing_log = pd.read_csv(log_file)
                     updated_log = pd.concat([existing_log, new_log_df], ignore_index=True)
                 else:
                     updated_log = new_log_df
-                    
-                updated_log.to_csv(log_file, index=False)
+                updated_log.to_csv(tmp_log, index=False)
+                shutil.move(tmp_log, log_file)
+                
+                # 2️⃣ อัปเดตมูลค่าพอร์ตอัตโนมัติ (Atomic Write)
+                if os.path.exists(PORTFOLIO_FILE):
+                    port_df_current = pd.read_csv(PORTFOLIO_FILE)
+                    for _, row in trades.iterrows():
+                        t = row['หุ้น']
+                        net_change = row['ซื้อ'] - row['ขาย']
+                        
+                        idx = port_df_current['รายชื่อหุ้น'] == t
+                        if idx.any():
+                            port_df_current.loc[idx, 'ยอดเงินปัจจุบัน (บาท)'] += net_change
+                        elif row['ซื้อ'] > 0:
+                            # หุ้นใหม่ที่เพิ่งงอกเข้าพอร์ต
+                            new_row = pd.DataFrame([{'รายชื่อหุ้น': t, 'ยอดเงินปัจจุบัน (บาท)': row['ซื้อ']}])
+                            port_df_current = pd.concat([port_df_current, new_row], ignore_index=True)
+                            
+                    tmp_port = PORTFOLIO_FILE + ".tmp"
+                    port_df_current.to_csv(tmp_port, index=False)
+                    shutil.move(tmp_port, PORTFOLIO_FILE)
+
                 st.session_state['logged_this_run'] = True
-                st.success(f"💾 บันทึกประวัติเรียบร้อยแล้ว! (บันทึกสำเร็จ {len(new_log_df)} รายการ)")
+                st.success(f"💾 บันทึกประวัติและอัปเดตพอร์ตสำเร็จ {len(new_log_df)} รายการ!")
+                st.rerun() # รีเฟรชหน้าเว็บเพื่อให้ Sidebar อัปเดตยอดเงินทันที
             else:
                 st.session_state['logged_this_run'] = True
                 st.info("รอบนี้ไม่มีคำสั่งซื้อขายที่ต้องบันทึกครับ (Hold รักษาสมดุล)")
@@ -442,10 +430,8 @@ if st.session_state.get('run_quant_engine', False):
     if os.path.exists("trade_log.csv"):
         with st.expander("📂 ดูประวัติการเทรดย้อนหลังทั้งหมด"):
             history_df = pd.read_csv("trade_log.csv")
-            
             col1, col2, col3 = st.columns(3)
             col1.metric("รายการทั้งหมด", len(history_df))
             col2.metric("ซื้อสะสม (บาท)", f"{history_df[history_df['Action']=='BUY']['Amount_THB'].sum():,.0f}")
             col3.metric("ขายสะสม (บาท)", f"{history_df[history_df['Action']=='SELL']['Amount_THB'].sum():,.0f}")
-            
             st.dataframe(history_df.sort_values("Date", ascending=False), use_container_width=True, hide_index=True)
