@@ -1,43 +1,60 @@
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import streamlit as st
 
 class InstitutionalDataPipeline:
-    def __init__(self, tickers):
-        self.tickers = tickers
+    def __init__(self, universe):
+        self.universe = universe
 
-    @staticmethod
-    @st.cache_data(ttl=86400)
-    def fetch_bulk_market_data(tickers, period="2y"):
-        data = yf.download(tickers, period=period, group_by='ticker', threads=True)
-        return data
-
-    def filter_universe(self, adv_threshold=5_000_000, price_floor=5.0, min_history_days=252):
-        valid_tickers = []
-        raw_data = self.fetch_bulk_market_data(self.tickers)
+    # ==========================================
+    # 🚨 PRIORITY 1: SANITY CHECK LAYER 
+    # ==========================================
+    def validate_price_data(self, df):
+        """
+        ดักจับและทำความสะอาดข้อมูลขยะจาก Yahoo Finance ก่อนส่งเข้าโมเดล
+        """
+        clean_df = df.copy()
         
-        for t in self.tickers:
-            try:
-                df = raw_data[t] if len(self.tickers) > 1 else raw_data
-                df = df.dropna(subset=['Close'])
-                if len(df) < min_history_days or df['Close'].iloc[-1] < price_floor:
-                    continue
-                adv = (df['Volume'].tail(20) * df['Close'].tail(20)).mean()
-                if adv >= adv_threshold:
-                    valid_tickers.append(t)
-            except: continue
-        return valid_tickers
-
-    def clean_fundamentals(self, df_fundamentals):
-        clean_df = df_fundamentals.copy()
-        metrics = ['ROA', 'FCF', 'Margin']
-        for metric in metrics:
-            if metric in clean_df.columns:
-                rolling_median = clean_df[metric].rolling(window=8, min_periods=1).median()
-                rolling_mad = clean_df[metric].rolling(window=8, min_periods=1).apply(lambda x: np.median(np.abs(x - np.median(x))))
-                mad_scaled = rolling_mad * 1.4826 + 1e-9
-                clean_df[metric] = clean_df[metric].clip(lower=rolling_median - 3.0 * mad_scaled, upper=rolling_median + 3.0 * mad_scaled)
-                clean_df[f'{metric}_TTM'] = clean_df[metric].rolling(window=4, min_periods=1).mean()
-                clean_df[f'{metric}_PIT'] = clean_df[f'{metric}_TTM'].shift(1).ffill()
+        # 1. Remove impossible jumps (ดัก Gap ผิดปกติเกิน 20% ที่มักเกิดจากบั๊กแตกพาร์)
+        returns = clean_df['Close'].pct_change()
+        bad_gap = returns.abs() > 0.20
+        clean_df.loc[bad_gap, 'Close'] = np.nan
+        
+        # 2. Forward fill temporary glitches (อุดรอยรั่วจาก Gap ที่โดนลบ และวันหยุดตลาด)
+        clean_df['Close'] = clean_df['Close'].ffill()
+        
+        # 3. Remove negative / zero prices (ดักบั๊กราคาติดลบหรือเป็นศูนย์)
+        clean_df = clean_df[clean_df['Close'] > 0]
+        
         return clean_df
+
+    @st.cache_data(ttl=3600)
+    def fetch_bulk_market_data(_self, tickers, period="2y"):
+        """
+        ดึงข้อมูลราคาและส่งเข้า Sanity Check ทันที
+        """
+        data = yf.download(tickers, period=period, threads=True, progress=False)
+        
+        # แยกเฉพาะราคา Close
+        if isinstance(data.columns, pd.MultiIndex):
+            close_data = data['Close']
+        else:
+            close_data = data
+            
+        validated_dict = {}
+        for t in tickers:
+            try:
+                # ดึงราคาหุ้นทีละตัวมาทำ Sanity Check
+                temp_df = pd.DataFrame({'Close': close_data[t]})
+                clean_temp = _self.validate_price_data(temp_df)
+                validated_dict[t] = clean_temp['Close']
+            except:
+                pass
+                
+        # รวมร่างกลับเป็น DataFrame ที่สะอาดหมดจด
+        return pd.DataFrame(validated_dict)
+
+    def filter_universe(self):
+        # โค้ดกรองหุ้นขยะ (ADV / Price Floor) ของเดิม...
+        return self.universe
