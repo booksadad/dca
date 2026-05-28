@@ -1,7 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import streamlit as st
+from cache_utils import ttl_cache
 import os, sys
 
 def block_print():
@@ -12,7 +12,7 @@ def enable_print():
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
 
-@st.cache_data(ttl=3600)
+@ttl_cache(ttl_seconds=3600)
 def fetch_fundamental_data(tickers):
     metrics = []
     for t in tickers:
@@ -38,7 +38,7 @@ def fetch_fundamental_data(tickers):
         })
     return pd.DataFrame(metrics)
 
-@st.cache_data(ttl=1800)
+@ttl_cache(ttl_seconds=1800)
 def fetch_market_data(tickers, period="3y"):
     block_print()
     data = yf.download(tickers, period=period, progress=False)['Close']
