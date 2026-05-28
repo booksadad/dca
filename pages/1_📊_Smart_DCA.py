@@ -5,7 +5,7 @@ import os, sys, json
 import warnings
 from datetime import datetime
 import plotly.express as px
-import shutil  # เพิ่มโมดูลนี้สำหรับทำ Atomic Write
+import shutil
 
 # ==========================================
 # 🛠️ ทะลวงกำแพงโฟลเดอร์
@@ -27,6 +27,7 @@ except ModuleNotFoundError as e:
 
 warnings.filterwarnings("ignore")
 PORTFOLIO_FILE = "my_portfolio_data.csv"
+LOG_FILE = "trade_log.csv"
 
 # ==========================================
 # 💾 ฐานข้อมูลและ Baseline
@@ -78,7 +79,6 @@ for t in my_portfolio:
     default_rows.append({"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": val})
 
 df_holdings_edited = st.data_editor(pd.DataFrame(default_rows), use_container_width=True, hide_index=True)
-# เซฟค่าจาก UI ลงไฟล์ (จังหวะปกติ)
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
 current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
@@ -117,6 +117,10 @@ if st.session_state.get('run_quant_engine', False):
         prices_1y = raw_prices.tail(252)
         returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
+        
+        # 💾 เก็บราคาล่าสุดไว้ใช้สำหรับคำนวณ Shares ใน Logger และ P&L
+        current_prices_dict = prices_1y.iloc[-1].to_dict()
+        st.session_state['current_prices'] = current_prices_dict
         
         status_box.update(label="🧬 Layer 2: สกัด Factor และคำนวณ Z-Score...")
         from data_loader import fetch_fundamental_data
@@ -208,16 +212,13 @@ if st.session_state.get('run_quant_engine', False):
                 t = row['Ticker']
                 reasons = []
                 severity = 'HOLD'
-                
                 if row['Alpha_Score'] < -0.5:
                     reasons.append(f"Alpha ติดลบ ({row['Alpha_Score']:.2f})")
                     severity = 'REDUCE'
-                
                 beta = row.get('Beta', 1.0)
                 if p_panic > 0.7 and beta > 1.5 and row['Alpha_Score'] < 0:
                     reasons.append(f"PANIC + หุ้นผันผวนสูง + Alpha แย่")
                     severity = 'EXIT'
-                    
                 if reasons:
                     exit_signals.append({'Ticker': t, 'Severity': severity, 'Reasons': reasons})
             return exit_signals
@@ -238,7 +239,6 @@ if st.session_state.get('run_quant_engine', False):
         MIN_DEVIATION = 5.0  
         mask_small_diff = (port_df['Target_%'] - port_df['Weight_%']).abs() < MIN_DEVIATION
         mask_not_selling = port_df['Sell_Amount'] == 0
-        
         port_df.loc[mask_small_diff & mask_not_selling, 'Target_%'] = port_df.loc[mask_small_diff & mask_not_selling, 'Weight_%']
         port_df.loc[mask_small_diff & mask_not_selling, 'Action_Reason'] = "🔒 น้ำหนักไม่ถึงเกณฑ์สับเปลี่ยน (5%)"
         
@@ -274,47 +274,6 @@ if st.session_state.get('run_quant_engine', False):
         top_alpha_display['MDD'] = top_alpha_display['Max_Drawdown'].round(1).astype(str) + "%"
         top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
 
-        def evaluate_new_entries(candidates_df, p_df, p_panic, m_port):
-            if len(m_port) >= 10: return []
-            avg_a = p_df['Alpha_Score'].mean() if not p_df.empty else 0
-            worst_r = (p_df['Alpha_Score'] / (p_df['Max_Drawdown'].abs() + 1e-9)).min() if not p_df.empty else -999
-            
-            cands = candidates_df[candidates_df['สถานะ'] == "✨ เป้าหมายใหม่"]
-            passed = []
-            for _, r in cands.iterrows():
-                if (r['Alpha_Score'] > avg_a + 1.0) and (r['Risk_Adj_Alpha'] > worst_r) and not (p_panic > 0.5 and float(r['MDD'].replace('%','')) < -30):
-                    passed.append(r['Ticker'])
-            return passed
-
-        new_entries = evaluate_new_entries(top_alpha_display, port_df, P_PANIC, my_portfolio)
-        for t in new_entries: st.session_state['entry_candidates_history'][t] = st.session_state['entry_candidates_history'].get(t, 0) + 1
-        for t in list(st.session_state['entry_candidates_history'].keys()):
-            if t not in new_entries: st.session_state['entry_candidates_history'][t] = 0
-        st.session_state['confirmed_new_entries'] = [t for t, c in st.session_state['entry_candidates_history'].items() if c >= 2]
-
-        def evaluate_rotation(top_a_disp, p_panic, budget):
-            cur = top_a_disp[top_a_disp['สถานะ'] == "💼 ถืออยู่"]
-            out = top_a_disp[top_a_disp['สถานะ'] == "✨ เป้าหมายใหม่"]
-            if cur.empty or out.empty: return None
-            w_held = cur.sort_values('Risk_Adj_Alpha').iloc[0]
-            b_new = out.sort_values('Risk_Adj_Alpha', ascending=False).iloc[0]
-            
-            a_diff = b_new['Alpha_Score'] - w_held['Alpha_Score']
-            r_diff = b_new['Risk_Adj_Alpha'] - w_held['Risk_Adj_Alpha']
-            if a_diff < 1.0 or r_diff < 0.005 or p_panic > 0.6: return None
-            
-            est_pos = budget * 10
-            if (a_diff * 0.02 * est_pos) < (est_pos * 0.001 * 2 * 3): return None
-            return {'buy': b_new['Ticker'], 'sell': w_held['Ticker'], 'alpha_diff': a_diff}
-
-        rot_signal = evaluate_rotation(top_alpha_display, P_PANIC, actual_budget)
-        if rot_signal:
-            k = f"{rot_signal['buy']}_vs_{rot_signal['sell']}"
-            st.session_state['rotation_history'][k] = st.session_state['rotation_history'].get(k, 0) + 1
-            rot_signal['status'] = 'CONFIRMED' if st.session_state['rotation_history'][k] >= 2 else 'PENDING'
-            st.session_state['rotation_alert'] = rot_signal
-        else: st.session_state['rotation_alert'] = None
-
         t_exposure = port_df.groupby('Sector')['Target_%'].sum().reset_index()
         p_state = json.dumps({"market_regime": f"{regime_weights['Current_State']}", "proposed_buys": out[out['ซื้อ']>0][['หุ้น', 'ซื้อ']].to_dict('records')})
         
@@ -337,22 +296,74 @@ if st.session_state.get('run_quant_engine', False):
             if sig['Severity'] == 'EXIT': st.error(f"**🔴 EXIT SIGNAL:** {sig['Ticker']} — {' | '.join(sig['Reasons'])}")
             elif sig['Severity'] == 'REDUCE': st.warning(f"**🟡 REDUCE SIGNAL:** {sig['Ticker']} — {' | '.join(sig['Reasons'])}")
 
-    if st.session_state.get('confirmed_new_entries'):
-        for t in st.session_state['confirmed_new_entries']:
-            st.success(f"**🟢 NEW POSITION CONFIRMED:** หุ้น {t} ผ่านเกณฑ์ 3 ข้อต่อเนื่อง พิจารณาเพิ่มเข้าพอร์ต!")
+    # ==========================================
+    # 📈 PHASE 1: PERFORMANCE MEASUREMENT (P&L Dashboard)
+    # ==========================================
+    def calculate_portfolio_performance(log_file, current_prices):
+        if not os.path.exists(log_file): return None
+        df_log = pd.read_csv(log_file)
+        if 'Shares' not in df_log.columns: return None # กรณีไฟล์เก่าที่ยังไม่มีหุ้น
 
-    if st.session_state.get('rotation_alert'):
-        rot = st.session_state['rotation_alert']
-        if rot['status'] == 'CONFIRMED': st.success(f"**🔄 CONFIRMED ROTATION:** ขาย **{rot['sell']}** เข้า **{rot['buy']}** (Alpha Diff: +{rot['alpha_diff']:.2f})")
-        else: st.info(f"**⏳ PENDING ROTATION:** เล็งสับเปลี่ยน **{rot['sell']}** เข้า **{rot['buy']}** (รอรอบยืนยันถัดไป)")
+        perf_data = []
+        for ticker in df_log['Ticker'].unique():
+            ticker_trades = df_log[df_log['Ticker'] == ticker].dropna(subset=['Shares'])
+            total_shares = 0.0
+            total_cost = 0.0
+            for _, trade in ticker_trades.iterrows():
+                if trade['Action'] == 'BUY':
+                    total_shares += trade['Shares']
+                    total_cost += trade['Amount_THB']
+                elif trade['Action'] == 'SELL':
+                    if total_shares > 0:
+                        avg_cost_temp = total_cost / total_shares
+                        total_shares -= trade['Shares']
+                        total_cost -= (avg_cost_temp * trade['Shares'])
+                        
+            if total_shares > 1e-6:
+                avg_cost = total_cost / total_shares
+                cur_price = current_prices.get(ticker, avg_cost)
+                market_value = total_shares * cur_price
+                unrealized_pl = market_value - total_cost
+                unrealized_pl_pct = (unrealized_pl / total_cost) * 100 if total_cost > 0 else 0
+                
+                perf_data.append({
+                    'Ticker': ticker,
+                    'Shares': round(total_shares, 4),
+                    'Avg_Cost': round(avg_cost, 2),
+                    'Total_Cost': round(total_cost, 2),
+                    'Market_Value': round(market_value, 2),
+                    'Unrealized_P&L': round(unrealized_pl, 2),
+                    'P&L_%': round(unrealized_pl_pct, 2)
+                })
+        return pd.DataFrame(perf_data)
+
+    current_prices = st.session_state.get('current_prices', {})
+    perf_df = calculate_portfolio_performance(LOG_FILE, current_prices)
+    
+    if perf_df is not None and not perf_df.empty:
+        st.markdown("### 💰 กระจกสะท้อนผลงานพอร์ต (Portfolio P&L)")
+        total_investment = perf_df['Total_Cost'].sum()
+        total_market_value = perf_df['Market_Value'].sum()
+        total_pl = total_market_value - total_investment
+        total_pl_pct = (total_pl / total_investment) * 100 if total_investment > 0 else 0
+        
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("มูลค่าพอร์ตปัจจุบัน (Market Value)", f"฿ {total_market_value:,.2f}")
+        mc2.metric("ต้นทุนสะสม (Total Cost)", f"฿ {total_investment:,.2f}")
+        mc3.metric("กำไร/ขาดทุนสะสม (Unrealized P&L)", f"฿ {total_pl:,.2f}", f"{total_pl_pct:,.2f}%")
+        
+        # จัด Format ตารางให้ดูง่าย มีสีสัน
+        styled_perf = perf_df.style.applymap(lambda x: 'color: #2ca02c' if x > 0 else 'color: #d62728' if x < 0 else '', subset=['Unrealized_P&L', 'P&L_%']).format({'Avg_Cost': '฿{:.2f}', 'Total_Cost': '฿{:.2f}', 'Market_Value': '฿{:.2f}', 'Unrealized_P&L': '฿{:.2f}', 'P&L_%': '{:.2f}%'})
+        st.dataframe(styled_perf, use_container_width=True, hide_index=True)
+        st.markdown("---")
 
     # ==========================================
     # 📋 MAIN TABLES & CHARTS
     # ==========================================
-    st.markdown("### 📋 2. ตาราง Quant Allocation (Execution Log)")
+    st.markdown("### 📋 ตาราง Quant Allocation (คำสั่ง Execution รอบนี้)")
     st.dataframe(st.session_state['out_table'][['หุ้น', 'เหตุผล (Action)', 'MDD', 'RSI', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
     
-    st.markdown("### 📊 3. สัดส่วนอุตสาหกรรมเป้าหมาย (Target Sector Exposure)")
+    st.markdown("### 📊 สัดส่วนอุตสาหกรรมเป้าหมาย (Target Sector Exposure)")
     fig = px.bar(st.session_state['sector_exposure'], x='Target_%', y='Sector', orientation='h', text='Target_%', color='Target_%', color_continuous_scale='Teal')
     fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
     fig.update_layout(xaxis_title="Target Weight (%)", yaxis_title="", showlegend=False, height=300)
@@ -363,43 +374,44 @@ if st.session_state.get('run_quant_engine', False):
     st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'Risk_Adj_Alpha', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'Risk_Adj_Alpha': 'Risk-adj Alpha', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
     # ==========================================
-    # 📝 TRADE LOGGING SYSTEM (Atomic Write & Auto-Update)
+    # 📝 TRADE LOGGING SYSTEM (อัปเกรดเก็บ Price & Shares)
     # ==========================================
     st.markdown("---")
     st.subheader("💾 บันทึกประวัติการทำรายการ (Trade Logger)")
     
     if st.button("✅ ยืนยันคำสั่งและบันทึกประวัติลง CSV", type="primary"):
         if not st.session_state.get('logged_this_run', False):
-            log_file = "trade_log.csv"
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             action_df = st.session_state['out_table']
             trades = action_df[(action_df['ซื้อ'] > 0) | (action_df['ขาย'] > 0)].copy()
             regime_data = st.session_state.get('current_regime_weights', {})
+            prices_dict = st.session_state.get('current_prices', {})
             
             if not trades.empty:
                 log_data = []
                 for _, row in trades.iterrows():
                     alpha_lookup = round(st.session_state['top_alpha_table'].set_index('Ticker')['Alpha_Score'].get(row['หุ้น'], 0), 3)
+                    exec_price = prices_dict.get(row['หุ้น'], 1.0)
                     
                     if row['ซื้อ'] > 0:
-                        log_data.append({'Date': current_time, 'Ticker': row['หุ้น'], 'Action': 'BUY', 'Amount_THB': round(row['ซื้อ'], 2), 'Reason': row['เหตุผล (Action)'], 'Regime': regime_data.get('Current_State', 'N/A'), 'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1), 'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1), 'Alpha_Score': alpha_lookup})
+                        shares_bought = round(row['ซื้อ'] / exec_price, 6)
+                        log_data.append({'Date': current_time, 'Ticker': row['หุ้น'], 'Action': 'BUY', 'Amount_THB': round(row['ซื้อ'], 2), 'Price': round(exec_price, 2), 'Shares': shares_bought, 'Reason': row['เหตุผล (Action)'], 'Regime': regime_data.get('Current_State', 'N/A'), 'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1), 'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1), 'Alpha_Score': alpha_lookup})
                     if row['ขาย'] > 0:
-                        log_data.append({'Date': current_time, 'Ticker': row['หุ้น'], 'Action': 'SELL', 'Amount_THB': round(row['ขาย'], 2), 'Reason': row['เหตุผล (Action)'], 'Regime': regime_data.get('Current_State', 'N/A'), 'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1), 'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1), 'Alpha_Score': alpha_lookup})
+                        shares_sold = round(row['ขาย'] / exec_price, 6)
+                        log_data.append({'Date': current_time, 'Ticker': row['หุ้น'], 'Action': 'SELL', 'Amount_THB': round(row['ขาย'], 2), 'Price': round(exec_price, 2), 'Shares': shares_sold, 'Reason': row['เหตุผล (Action)'], 'Regime': regime_data.get('Current_State', 'N/A'), 'P_Bull': round(regime_data.get('P_BULL', 0) * 100, 1), 'P_Panic': round(regime_data.get('P_PANIC', 0) * 100, 1), 'Alpha_Score': alpha_lookup})
                 
                 new_log_df = pd.DataFrame(log_data)
                 
-                # 1️⃣ Atomic Write สำหรับ Trade Log
-                tmp_log = log_file + ".tmp"
-                if os.path.exists(log_file):
-                    existing_log = pd.read_csv(log_file)
+                tmp_log = LOG_FILE + ".tmp"
+                if os.path.exists(LOG_FILE):
+                    existing_log = pd.read_csv(LOG_FILE)
                     updated_log = pd.concat([existing_log, new_log_df], ignore_index=True)
                 else:
                     updated_log = new_log_df
                 updated_log.to_csv(tmp_log, index=False)
-                shutil.move(tmp_log, log_file)
+                shutil.move(tmp_log, LOG_FILE)
                 
-                # 2️⃣ อัปเดตมูลค่าพอร์ตอัตโนมัติ (Atomic Write)
                 if os.path.exists(PORTFOLIO_FILE):
                     port_df_current = pd.read_csv(PORTFOLIO_FILE)
                     for _, row in trades.iterrows():
@@ -410,7 +422,6 @@ if st.session_state.get('run_quant_engine', False):
                         if idx.any():
                             port_df_current.loc[idx, 'ยอดเงินปัจจุบัน (บาท)'] += net_change
                         elif row['ซื้อ'] > 0:
-                            # หุ้นใหม่ที่เพิ่งงอกเข้าพอร์ต
                             new_row = pd.DataFrame([{'รายชื่อหุ้น': t, 'ยอดเงินปัจจุบัน (บาท)': row['ซื้อ']}])
                             port_df_current = pd.concat([port_df_current, new_row], ignore_index=True)
                             
@@ -419,17 +430,17 @@ if st.session_state.get('run_quant_engine', False):
                     shutil.move(tmp_port, PORTFOLIO_FILE)
 
                 st.session_state['logged_this_run'] = True
-                st.success(f"💾 บันทึกประวัติและอัปเดตพอร์ตสำเร็จ {len(new_log_df)} รายการ!")
-                st.rerun() # รีเฟรชหน้าเว็บเพื่อให้ Sidebar อัปเดตยอดเงินทันที
+                st.success(f"💾 บันทึกประวัติพร้อมคำนวณ Price/Shares สำเร็จ {len(new_log_df)} รายการ!")
+                st.rerun() 
             else:
                 st.session_state['logged_this_run'] = True
                 st.info("รอบนี้ไม่มีคำสั่งซื้อขายที่ต้องบันทึกครับ (Hold รักษาสมดุล)")
         else:
             st.warning("⚠️ รอบนี้บันทึกไปแล้วครับ — กด 'รันระบบ' ใหม่ก่อนบันทึกรอบถัดไป")
 
-    if os.path.exists("trade_log.csv"):
-        with st.expander("📂 ดูประวัติการเทรดย้อนหลังทั้งหมด"):
-            history_df = pd.read_csv("trade_log.csv")
+    if os.path.exists(LOG_FILE):
+        with st.expander("📂 ดูประวัติการเทรดย้อนหลังทั้งหมด (Trade Log)"):
+            history_df = pd.read_csv(LOG_FILE)
             col1, col2, col3 = st.columns(3)
             col1.metric("รายการทั้งหมด", len(history_df))
             col2.metric("ซื้อสะสม (บาท)", f"{history_df[history_df['Action']=='BUY']['Amount_THB'].sum():,.0f}")
