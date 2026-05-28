@@ -402,3 +402,58 @@ if st.session_state.get('run_quant_engine', False):
                 col1, col2 = st.columns(2)
                 with col1: st.json(cro_data)
                 with col2: st.json(pm_data)
+    # ==========================================
+    # 📝 TRADE LOGGING SYSTEM (บันทึกประวัติการเทรด)
+    # ==========================================
+    st.markdown("---")
+    st.subheader("💾 บันทึกประวัติการทำรายการ (Trade Logger)")
+    
+    if st.session_state.get('matrix_calculated', False):
+        if st.button("✅ ยืนยันคำสั่งและบันทึกประวัติลง CSV", type="primary"):
+            log_file = "trade_log.csv"
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # ดึงตารางผลลัพธ์ปัจจุบันมากรองเฉพาะตัวที่มี Action
+            action_df = st.session_state['out_table']
+            trades = action_df[(action_df['ซื้อ'] > 0) | (action_df['ขาย'] > 0)].copy()
+            
+            if not trades.empty:
+                log_data = []
+                for _, row in trades.iterrows():
+                    if row['ซื้อ'] > 0:
+                        log_data.append({
+                            'Date': current_time, 
+                            'Ticker': row['หุ้น'], 
+                            'Action': 'BUY', 
+                            'Amount_THB': round(row['ซื้อ'], 2), 
+                            'Reason': row['เหตุผล (Action)']
+                        })
+                    if row['ขาย'] > 0:
+                        log_data.append({
+                            'Date': current_time, 
+                            'Ticker': row['หุ้น'], 
+                            'Action': 'SELL', 
+                            'Amount_THB': round(row['ขาย'], 2), 
+                            'Reason': row['เหตุผล (Action)']
+                        })
+                
+                new_log_df = pd.DataFrame(log_data)
+                
+                # เช็คว่ามีไฟล์เดิมอยู่ไหม ถ้ามีให้เอาข้อมูลใหม่ไปต่อท้าย
+                if os.path.exists(log_file):
+                    existing_log = pd.read_csv(log_file)
+                    updated_log = pd.concat([existing_log, new_log_df], ignore_index=True)
+                else:
+                    updated_log = new_log_df
+                    
+                updated_log.to_csv(log_file, index=False)
+                st.success(f"💾 บันทึกประวัติเรียบร้อยแล้ว! (บันทึกสำเร็จ {len(new_log_df)} รายการ)")
+                st.dataframe(new_log_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("รอบนี้ไม่มีคำสั่งซื้อขายที่ต้องบันทึกครับ (Hold รักษาสมดุล)")
+                
+        # ปุ่มสำหรับดูประวัติย้อนหลัง
+        if os.path.exists("trade_log.csv"):
+            with st.expander("📂 ดูประวัติการเทรดย้อนหลังทั้งหมด"):
+                history_df = pd.read_csv("trade_log.csv")
+                st.dataframe(history_df.sort_values(by="Date", ascending=False), use_container_width=True, hide_index=True)
