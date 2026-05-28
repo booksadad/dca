@@ -3,19 +3,13 @@ import pandas as pd
 import numpy as np
 import os, sys, json
 import warnings
-import requests # เพิ่ม requests สำหรับ LINE Notify
 
-# ==========================================
-# 🛠️ ทะลวงกำแพงโฟลเดอร์ (Bulletproof Path Resolver)
-# ==========================================
+# ทะลวงโฟลเดอร์
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.abspath(os.path.join(current_dir, '..'))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-# ==========================================
-# 📥 รวมศูนย์ระบบ 4 LAYERS (The Great Assembly)
-# ==========================================
 try:
     from data_pipeline import InstitutionalDataPipeline
     from factors import two_pass_zscore, calculate_alpha_decay, calculate_rsi, check_doi_risk, find_sr_levels
@@ -23,15 +17,12 @@ try:
     from optimizer import run_institutional_black_litterman
     from risk import run_institutional_audit
 except ModuleNotFoundError as e:
-    st.error(f"🚨 **ระบบหาไฟล์โมดูลไม่เจอ!** \n\n{e}\n\n**วิธีแก้:** โปรดเช็คว่าสร้างไฟล์ `data_pipeline.py`, `factors.py`, `regime.py`, `optimizer.py` ไว้ครบถ้วน")
+    st.error(f"🚨 **ระบบหาไฟล์ไม่เจอ!** \n\n{e}")
     st.stop()
 
 warnings.filterwarnings("ignore")
 PORTFOLIO_FILE = "my_portfolio_data.csv"
 
-# ==========================================
-# 💾 ฐานข้อมูลถอดรหัสและ Baseline Layer 
-# ==========================================
 SECTOR_DB = {
     "💻 Tech": ["NVDA", "MSFT", "GOOG", "META", "CSCO", "TXN", "AAPL", "AMD", "PLTR", "AVGO", "RKLB"],
     "🛍️ Consumer": ["COST", "KO", "PEP", "BLK", "MELI", "V", "MA", "WMT"],
@@ -43,21 +34,11 @@ SECTOR_DB = {
 ticker_to_sector = {ticker: sector for sector, tickers in SECTOR_DB.items() for ticker in tickers}
 THESIS_DB = {"NVDA": "AI Infra Dominance", "JNJ": "Healthcare Titan", "TSLA": "EV & AI Robotics", "ENPH": "Solar Inverter Leader", "TXN": "Analog Chip Moat", "BRK-B": "Fortress Balance Sheet", "RKLB": "Space Infrastructure"} 
 
-# 💎 ฝังพอร์ตจริงเริ่มต้น
-DEFAULT_PORTFOLIO = {
-    "BRK-B": 1361.56,
-    "NVDA": 1128.72,
-    "JNJ": 745.42,
-    "TSLA": 475.33,
-    "ENPH": 311.58,
-    "TXN": 308.51,
-    "RKLB": 156.75
-}
+DEFAULT_PORTFOLIO = {"BRK-B": 1361.56, "NVDA": 1128.72, "JNJ": 745.42, "TSLA": 475.33, "ENPH": 311.58, "TXN": 308.51, "RKLB": 156.75}
 
 st.set_page_config(page_title="QuantHQ DCA", page_icon="🛡️", layout="wide")
-st.title("🛡️ QUANT-HQ DCA (V. Full Pipeline Infrastructure)")
+st.title("🛡️ QUANT-HQ DCA (Phase A: Institutional Stability)")
 
-# ================= UI & SIDEBAR =================
 st.sidebar.subheader("🗂️ หุ้นในพอร์ตของคุณ")
 tickers_input = st.sidebar.text_area("รายชื่อหุ้น (คั่นด้วยลูกน้ำ)", ", ".join(DEFAULT_PORTFOLIO.keys()))
 my_portfolio = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
@@ -78,15 +59,13 @@ if os.path.exists(PORTFOLIO_FILE):
 
 default_rows = []
 for t in my_portfolio:
-    if t in saved_dict and saved_dict[t] > 0: val = saved_dict[t] 
-    else: val = DEFAULT_PORTFOLIO.get(t, 0.0) 
+    val = saved_dict.get(t, DEFAULT_PORTFOLIO.get(t, 0.0))
     default_rows.append({"รายชื่อหุ้น": t, "ยอดเงินปัจจุบัน (บาท)": val})
 
 df_holdings_edited = st.data_editor(pd.DataFrame(default_rows), use_container_width=True, hide_index=True)
 df_holdings_edited.to_csv(PORTFOLIO_FILE, index=False)
 current_thb = dict(zip(df_holdings_edited["รายชื่อหุ้น"], df_holdings_edited["ยอดเงินปัจจุบัน (บาท)"]))
 
-# ================= EXECUTION & STATE MANAGEMENT =================
 if st.button("🚀 รันระบบ Quant Matrix", type="primary"):
     st.session_state['run_quant_engine'] = True
     st.session_state['matrix_calculated'] = False 
@@ -103,34 +82,27 @@ if st.session_state.get('run_quant_engine', False):
         regime_engine = MarketRegimeHMM(n_states=2)
         factor_allocator = DynamicFactorAllocator()
         
-        status_box.update(label="📡 Layer 3: ดึงข้อมูล Macro และคำนวณ Expanding-Window HMM...")
+        status_box.update(label="📡 Layer 3: ดึงข้อมูล Macro และคำนวณ HMM (Hysteresis Active)...")
         df_macro = regime_engine.fetch_macro_features()
         raw_probs = regime_engine.expanding_fit_predict(df_macro)
         smooth_probs = regime_engine.apply_transition_smoothing(raw_probs)
-        regime_weights = factor_allocator.calculate_weights(smooth_probs)
+        # เรียกใช้ Hysteresis
+        hysteresis_probs = regime_engine.apply_hysteresis(smooth_probs)
+        regime_weights = factor_allocator.calculate_weights(hysteresis_probs)
         
-        status_box.update(label="🧼 Layer 1: ร่อนหุ้นขยะผ่าน ADV Floor & Price Floor และทำ Soft Clipping...")
+        status_box.update(label="🧼 Layer 1: ร่อนหุ้นผ่าน Sanity Check Pipeline...")
         clean_universe = pipeline.filter_universe()
         final_scan_list = list(set(my_portfolio + clean_universe))
         
+        # ดึงราคาผ่านระบบ Validate
         raw_prices = pipeline.fetch_bulk_market_data(final_scan_list)
-        
-        close_dict = {}
-        for t in final_scan_list:
-            try:
-                if isinstance(raw_prices.columns, pd.MultiIndex):
-                    close_dict[t] = raw_prices[t]['Close']
-                else:
-                    close_dict[t] = raw_prices['Close']
-            except: pass
-            
-        prices_df = pd.DataFrame(close_dict).ffill()
+        prices_df = raw_prices.copy()
         prices_1y = prices_df.tail(252)
         
         returns_1y = prices_1y.pct_change().fillna(0)
         max_dd = ((prices_1y - prices_1y.cummax()) / prices_1y.cummax()).min() * 100
         
-        status_box.update(label="🧬 Layer 2: สกัดโมเมนตัมและคำนวณ Robust Two-pass MAD Z-Score...")
+        status_box.update(label="🧬 Layer 2: สกัด Factor และคำนวณ Z-Score...")
         from data_loader import fetch_fundamental_data
         df_fundamentals = fetch_fundamental_data(final_scan_list)
         df_clean_fundamentals = pipeline.clean_fundamentals(df_fundamentals)
@@ -147,7 +119,6 @@ if st.session_state.get('run_quant_engine', False):
                 
                 s_t = prices_1y[t].dropna()
                 ret_6m = (s_t.iloc[-1]/s_t.iloc[max(0, len(s_t)-126)]) - 1 if len(s_t)>20 else 0.0
-                
                 mkt_ret_6m = (1 + spy_ret.tail(126)).prod() - 1 
                 residual_mom = ret_6m - (beta * mkt_ret_6m)
             except: residual_mom = 0.0
@@ -183,7 +154,7 @@ if st.session_state.get('run_quant_engine', False):
         port_df['Weight_%'] = (port_df['Current'] / total_port_value) * 100 if total_port_value > 0 else 0
         current_weights_arr = (port_df['Current'] / total_port_value).fillna(0).values if total_port_value > 0 else np.zeros(len(port_df))
 
-        status_box.update(label="🏛️ Layer 4: รันระบบจัดพอร์ตอัจฉริยะคำนวณต้นทุนธุรกรรมจริง...")
+        status_box.update(label="🏛️ Layer 4: Optimizer & Threshold Rebalancing...")
         if "Auto-Pilot" in engine_choice:
             opt_res, mu_bl = run_institutional_black_litterman(
                 port_df=port_df,
@@ -195,7 +166,6 @@ if st.session_state.get('run_quant_engine', False):
             if opt_res.success:
                 port_df['Target_%'] = port_df['Ticker'].map(dict(zip(port_df['Ticker'].tolist(), opt_res.x))) * 100.0
             else:
-                st.warning("⚠️ Constraints พอร์ตตึงเกินไป -> สลับเข้าแผนจัดน้ำหนักแบบ Risk Parity อัตโนมัติ")
                 rp_w = 1.0 / (returns_1y[port_df['Ticker'].tolist()].std() + 1e-9)
                 rp_target = (rp_w / rp_w.sum()) * 100.0
                 port_df['Target_%'] = port_df['Ticker'].map(rp_target.to_dict())
@@ -203,6 +173,16 @@ if st.session_state.get('run_quant_engine', False):
             rp_w = 1.0 / (returns_1y[port_df['Ticker'].tolist()].std() + 1e-9)
             rp_target = (rp_w / rp_w.sum()) * 100.0
             port_df['Target_%'] = port_df['Ticker'].map(rp_target.to_dict())
+
+        # ==========================================
+        # 🛡️ PRIORITY 2: THRESHOLD REBALANCING (ลดรอบสับเปลี่ยน)
+        # ==========================================
+        MIN_DEVIATION = 5.0  
+        mask_small_diff = (port_df['Target_%'] - port_df['Weight_%']).abs() < MIN_DEVIATION
+        port_df.loc[mask_small_diff, 'Target_%'] = port_df.loc[mask_small_diff, 'Weight_%']
+        
+        total_target = port_df['Target_%'].sum()
+        if total_target > 0: port_df['Target_%'] = (port_df['Target_%'] / total_target) * 100.0
 
         port_df['Target_Val'] = (total_port_value + actual_budget) * (port_df['Target_%'] / 100)
         port_df['Deficit'] = port_df['Target_Val'] - port_df['Current']
@@ -218,9 +198,6 @@ if st.session_state.get('run_quant_engine', False):
         out['RSI'] = out['หุ้น'].map(rsi_data).apply(check_doi_risk)
         out['รับ/ต้าน'] = out['หุ้น'].map(sr_data)
         
-        # ==========================================
-        # 🛠️ THE FIX: เพิ่ม Risk-Adjusted Alpha ตาม Framework
-        # ==========================================
         top_alpha_display = final_df.head(10).copy() 
         top_alpha_display['Risk_Adj_Alpha'] = (top_alpha_display['Alpha_Score'] / (top_alpha_display['Max_Drawdown'].abs() + 1e-9)).round(3)
         top_alpha_display['Alpha_Score'] = top_alpha_display['Alpha_Score'].round(2)
@@ -228,9 +205,9 @@ if st.session_state.get('run_quant_engine', False):
         top_alpha_display['สถานะ'] = top_alpha_display['Ticker'].apply(lambda x: "💼 ถืออยู่" if x in my_portfolio else "✨ เป้าหมายใหม่")
 
         t_exposure = [{"Sector": r['Sector'], "Weight_%": round(r['Target_%'], 1)} for _, r in port_df.groupby('Sector')['Target_%'].sum().reset_index().iterrows()]
-        p_state = json.dumps({"market_regime": f"BULL ({regime_weights['P_BULL']*100:.0f}%) | PANIC ({regime_weights['P_PANIC']*100:.0f}%)", "proposed_buys": out[out['ซื้อ']>0][['หุ้น', 'ซื้อ']].to_dict('records'), "target_sector_exposure": t_exposure, "top_alpha": final_df.head(5)[['Ticker', 'Alpha_Score']].to_dict('records')})
+        p_state = json.dumps({"market_regime": f"{regime_weights['Current_State']} | P(Bull)={regime_weights['P_BULL']*100:.0f}%", "proposed_buys": out[out['ซื้อ']>0][['หุ้น', 'ซื้อ']].to_dict('records')})
 
-        st.session_state['regime_report'] = f"📊 HMM Regime Weight Matrix -> 🐂 Bull Probability: {regime_weights['P_BULL']*100:.1f}% | 🐻 Panic Probability: {regime_weights['P_PANIC']*100:.1f}%"
+        st.session_state['regime_report'] = f"📊 HMM Regime (Hysteresis Active) -> Current State: {regime_weights['Current_State']} | 🐂 P(Bull): {regime_weights['P_BULL']*100:.1f}% | 🐻 P(Panic): {regime_weights['P_PANIC']*100:.1f}%"
         st.session_state['factor_mix'] = f"⚡ Dynamic Factor Allocation -> 🛠️ Momentum: {w_m*100:.0f}% | 🛡️ Quality: {w_q*100:.0f}% | ⚖️ Value: {w_v*100:.0f}%"
         st.session_state['out_table'] = out
         st.session_state['top_alpha_table'] = top_alpha_display
@@ -243,11 +220,11 @@ if st.session_state.get('run_quant_engine', False):
     st.info(st.session_state['regime_report'])
     st.success(st.session_state['factor_mix'])
     
-    st.markdown("### 📋 2. ตาราง Quant Allocation (Cost-Aware)")
+    st.markdown("### 📋 2. ตาราง Quant Allocation (Threshold Adjusted)")
     st.dataframe(st.session_state['out_table'][['หุ้น', 'Thesis', 'MDD', 'RSI', 'รับ/ต้าน', 'เป้า%', 'ทุนเดิม', 'ซื้อ', 'ขาย']].round(2).sort_values('ซื้อ', ascending=False), use_container_width=True, hide_index=True)
     
-   
-    # แสดงคอลัมน์ Risk_Adj_Alpha ในตาราง
+    st.markdown("---")
+    st.subheader("🏆 📡 [RADAR] TOP ALPHA CANDIDATES (MAD Z-Score)")
     st.dataframe(st.session_state['top_alpha_table'][['Ticker', 'Sector', 'Alpha_Score', 'Risk_Adj_Alpha', 'MDD', 'สถานะ']].rename(columns={'Ticker': 'หุ้น', 'Alpha_Score': 'Alpha Score', 'Risk_Adj_Alpha': 'Risk-adj Alpha', 'MDD': 'Max Drawdown'}), use_container_width=True, hide_index=True)
 
     if st.button("🧠 รันการตรวจสอบ (Run AI Audit)", type="primary"):
@@ -259,13 +236,3 @@ if st.session_state.get('run_quant_engine', False):
                 col1, col2 = st.columns(2)
                 with col1: st.json(cro_data)
                 with col2: st.json(pm_data)
-                
-                conf = pm_data.get("alpha_alignment_score", 0.0)
-                t_exposure = st.session_state['target_sector_exposure']
-                
-                if any(sec['Weight_%'] > 50.5 for sec in t_exposure): 
-                    st.error(f"🔴 BLOCKED: {cro_data.get('audit_explanation')}")
-                elif conf > 0.5: 
-                    st.success(f"🟢 APPROVED: {pm_data.get('audit_explanation')}")
-                else: 
-                    st.warning(f"🟡 WARNING: {pm_data.get('audit_explanation')}")
