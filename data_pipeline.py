@@ -31,30 +31,42 @@ class InstitutionalDataPipeline:
 
     @st.cache_data(ttl=3600)
     def fetch_bulk_market_data(_self, tickers, period="2y"):
-        """
-        ดึงข้อมูลราคาและส่งเข้า Sanity Check ทันที
-        """
-        data = yf.download(tickers, period=period, threads=True, progress=False)
-        
-        # แยกเฉพาะราคา Close
-        if isinstance(data.columns, pd.MultiIndex):
-            close_data = data['Close']
-        else:
-            close_data = data
-            
-        validated_dict = {}
-        for t in tickers:
-            try:
-                # ดึงราคาหุ้นทีละตัวมาทำ Sanity Check
-                temp_df = pd.DataFrame({'Close': close_data[t]})
-                clean_temp = _self.validate_price_data(temp_df)
-                validated_dict[t] = clean_temp['Close']
-            except:
-                pass
+        cache_file = "fallback_market_data.csv"
+        try:
+            data = yf.download(tickers, period=period, threads=True, progress=False)
+            if data.empty:
+                raise ValueError("Yahoo Finance ส่งข้อมูลว่างเปล่า")
                 
-        # รวมร่างกลับเป็น DataFrame ที่สะอาดหมดจด
-        return pd.DataFrame(validated_dict)
-
+            # แยกเฉพาะราคา Close
+            if isinstance(data.columns, pd.MultiIndex):
+                close_data = data['Close']
+            else:
+                close_data = data
+                
+            validated_dict = {}
+            for t in tickers:
+                try:
+                    # ดึงราคาหุ้นทีละตัวมาทำ Sanity Check
+                    temp_df = pd.DataFrame({'Close': close_data[t]})
+                    clean_temp = _self.validate_price_data(temp_df)
+                    validated_dict[t] = clean_temp['Close']
+                except:
+                    pass
+                    
+            final_df = pd.DataFrame(validated_dict)
+            
+            # 💾 สร้างไฟล์สำรองไว้ใช้ยามฉุกเฉิน
+            final_df.to_csv(cache_file)
+            return final_df
+            
+        except Exception as e:
+            st.warning(f"⚠️ yfinance มีปัญหา ({e}): ระบบกำลังสลับไปใช้ Cache ข้อมูลวันก่อนหน้าแทน")
+            import os
+            if os.path.exists(cache_file):
+                return pd.read_csv(cache_file, index_col=0, parse_dates=True)
+            else:
+                st.error("🚨 ระบบล่ม: ไม่สามารถโหลดข้อมูลได้ และไม่มี Cache สำรอง")
+                st.stop()
     def filter_universe(self):
         # สมมติฐานว่าส่งคืน Universe เดิม (สามารถใส่ Logic กรอง ADV เพิ่มเติมได้ที่นี่)
         return self.universe 
